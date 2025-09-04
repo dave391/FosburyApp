@@ -258,24 +258,32 @@ class TradingOpener:
     def _check_bitfinex_internal_transfer_needed(self, required_amount: float) -> Dict:
         """Controlla se è necessario un trasferimento interno in Bitfinex per derivatives"""
         try:
+            logger.info(f"DEBUG RENDER - Checking internal transfer for required amount: {required_amount}")
+            
             # Recupera saldi derivatives (USTF0) e totali
             derivatives_balance = self._get_exchange_balance('bitfinex', balance_type='derivatives')
             total_balance = self._get_exchange_balance('bitfinex', balance_type='total')
             
+            logger.info(f"DEBUG RENDER - Retrieved balances: derivatives={derivatives_balance}, total={total_balance}")
             logger.info(f"Bitfinex - Saldo derivatives (USTF0): {derivatives_balance}, Saldo totale: {total_balance}")
             
             # Se il wallet derivatives ha già fondi sufficienti
             if derivatives_balance >= required_amount:
+                logger.info(f"DEBUG RENDER - Derivatives balance sufficient: {derivatives_balance} >= {required_amount}")
                 return {'needed': False, 'derivatives_balance': derivatives_balance}
             
             # Calcola quanto trasferire
             transfer_amount = required_amount - derivatives_balance
             available_for_transfer = total_balance - derivatives_balance
             
-            if available_for_transfer < transfer_amount:
-                raise Exception(f"Fondi insufficienti per trasferimento: disponibili {available_for_transfer}, richiesti {transfer_amount}")
+            logger.info(f"DEBUG RENDER - Transfer calculation: need={transfer_amount}, available={available_for_transfer}")
             
-            return {
+            if available_for_transfer < transfer_amount:
+                error_msg = f"Fondi insufficienti per trasferimento: disponibili {available_for_transfer}, richiesti {transfer_amount}"
+                logger.error(f"DEBUG RENDER - {error_msg}")
+                raise Exception(error_msg)
+            
+            result = {
                 'needed': True,
                 'amount': transfer_amount,
                 'from_wallet': 'exchange',  # Assumiamo che i fondi extra siano nel wallet exchange
@@ -284,8 +292,12 @@ class TradingOpener:
                 'total_balance': total_balance
             }
             
+            logger.info(f"DEBUG RENDER - Transfer needed: {result}")
+            return result
+            
         except Exception as e:
             logger.error(f"Errore controllo trasferimento Bitfinex: {e}")
+            logger.error(f"DEBUG RENDER - Exception in transfer check: {str(e)}")
             raise
     
     def _execute_bitfinex_internal_transfer(self, amount: float, from_wallet: str, to_wallet: str) -> bool:
@@ -337,23 +349,45 @@ class TradingOpener:
                         balance = exchange.fetch_balance({'type': 'margin'})
                         ustf0_balance = 0
                         
+                        # LOGGING DETTAGLIATO PER DEBUG RENDER
+                        logger.info(f"DEBUG RENDER - Bitfinex margin balance response type: {type(balance)}")
+                        logger.info(f"DEBUG RENDER - Bitfinex margin balance keys: {list(balance.keys()) if isinstance(balance, dict) else 'Not a dict'}")
+                        
+                        if 'info' in balance:
+                            logger.info(f"DEBUG RENDER - Info field type: {type(balance['info'])}")
+                            logger.info(f"DEBUG RENDER - Info field content: {balance['info']}")
+                        else:
+                            logger.warning(f"DEBUG RENDER - No 'info' field in balance response")
+                        
+                        # Controlla anche il balance standard per USTF0
+                        if 'USTF0' in balance:
+                            logger.info(f"DEBUG RENDER - USTF0 in standard balance: {balance['USTF0']}")
+                            ustf0_balance = balance['USTF0'].get('free', 0)
+                        
                         # Estrae i balance dall'array 'info' (metodo del balance_checker)
                         if 'info' in balance and isinstance(balance['info'], list):
-                            for balance_entry in balance['info']:
+                            logger.info(f"DEBUG RENDER - Processing {len(balance['info'])} balance entries")
+                            for i, balance_entry in enumerate(balance['info']):
+                                logger.info(f"DEBUG RENDER - Entry {i}: {balance_entry}")
                                 if len(balance_entry) >= 5:
                                     entry_wallet = balance_entry[0]
                                     entry_currency = balance_entry[1]
                                     entry_total = float(balance_entry[4]) if balance_entry[4] else 0
                                     
+                                    logger.info(f"DEBUG RENDER - Parsed: wallet={entry_wallet}, currency={entry_currency}, total={entry_total}")
+                                    
                                     # Cerca USTF0 nel wallet margin
                                     if entry_wallet == 'margin' and entry_currency == 'USTF0' and entry_total > 0:
                                         ustf0_balance = entry_total
+                                        logger.info(f"DEBUG RENDER - Found USTF0 in margin: {ustf0_balance}")
                                         break
                         
+                        logger.info(f"DEBUG RENDER - Final USTF0 balance: {ustf0_balance}")
                         logger.debug(f"Bitfinex derivatives balance (USTF0): {ustf0_balance}")
                         return ustf0_balance
                     except Exception as e:
                         logger.error(f"Errore recupero saldo derivatives Bitfinex: {e}")
+                        logger.error(f"DEBUG RENDER - Exception details: {str(e)}")
                         return 0
                 
                 elif balance_type == 'tradable':
@@ -379,19 +413,29 @@ class TradingOpener:
                     currencies = ['USTF0', 'USDT', 'UST']
                     total_balance = 0
                     
+                    logger.info(f"DEBUG RENDER - Checking total balance across all wallets")
+                    
                     for wallet in wallets:
                         try:
                             balance = exchange.fetch_balance({'type': wallet})
+                            logger.info(f"DEBUG RENDER - {wallet} wallet response type: {type(balance)}")
+                            logger.info(f"DEBUG RENDER - {wallet} wallet keys: {list(balance.keys()) if isinstance(balance, dict) else 'Not a dict'}")
                             
                             # Somma tutti i fondi disponibili (free) di tutte le valute supportate
                             for currency in currencies:
                                 if currency in balance and balance[currency]['free'] > 0:
-                                    total_balance += balance[currency]['free']
-                                    logger.debug(f"Bitfinex {wallet} wallet - {currency}: {balance[currency]['free']}")
+                                    amount = balance[currency]['free']
+                                    total_balance += amount
+                                    logger.info(f"DEBUG RENDER - {wallet} wallet - {currency}: {amount} (added to total)")
+                                    logger.debug(f"Bitfinex {wallet} wallet - {currency}: {amount}")
+                                else:
+                                    logger.info(f"DEBUG RENDER - {wallet} wallet - {currency}: not found or zero")
                                     
                         except Exception as e:
                             logger.warning(f"Errore recupero saldo {wallet}: {e}")
+                            logger.error(f"DEBUG RENDER - Exception for {wallet}: {str(e)}")
                     
+                    logger.info(f"DEBUG RENDER - Total balance calculated: {total_balance} USDT")
                     logger.debug(f"Bitfinex total balance (tutti i wallet): {total_balance} USDT")
                     return total_balance
             
