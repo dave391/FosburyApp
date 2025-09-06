@@ -217,7 +217,7 @@ class Balancer:
                 logger.info(f"Deviazione leva: {leverage_diff:.2f}X - Ribilanciamento necessario")
                 
                 # Calcola quanto margine aggiungere o rimuovere
-                margin_diff = self.calculate_margin_adjustment(exchange_position, target_leverage, exchange_name)
+                margin_diff = self.calculate_margin_adjustment(exchange_position, target_leverage, exchange_name, api_keys, symbol)
                 
                 if margin_diff is None:
                     logger.warning(f"Impossibile calcolare aggiustamento margine per posizione {position_id}")
@@ -379,7 +379,7 @@ class Balancer:
             logger.error(f"Errore calcolo leva effettiva: {e}")
             return None
     
-    def calculate_margin_adjustment(self, position: Dict, target_leverage: float, exchange_name: str) -> Optional[float]:
+    def calculate_margin_adjustment(self, position: Dict, target_leverage: float, exchange_name: str, api_keys: Dict, symbol_from_db: str = None) -> Optional[float]:
         """Calcola quanto margine aggiungere o rimuovere per raggiungere la leva target
         
         Args:
@@ -455,30 +455,29 @@ class Balancer:
                 # Calcola differenza
                 margin_diff = target_margin - current_margin
                 
-                # Applica buffer ibrido per BitMEX quando si riduce il margine
-                # Questo previene l'errore "insufficient isolated margin"
+                # Controlla margine massimo rimovibile per BitMEX quando si riduce il margine
+                # Questo previene l'errore "insufficient isolated margin" usando i limiti reali di BitMEX
                 if margin_diff < 0:  # Solo quando si riduce il margine
-                    # Buffer ibrido: combina buffer minimo fisso con percentuale
-                    # - Buffer fisso: 0.50 USDT (protegge posizioni piccole)
-                    # - Buffer percentuale: 3% della riduzione (scala con posizioni grandi)
-                    # Usa il valore maggiore tra i due per massima sicurezza
-                    
-                    reduction_amount = abs(margin_diff)  # Quantità di riduzione richiesta
-                    fixed_buffer = 0.50  # Buffer fisso di 0.50 USDT
-                    percentage_buffer = reduction_amount * 0.03  # 3% della riduzione
-                    
-                    # Scegli il buffer maggiore tra fisso e percentuale
-                    applied_buffer = max(fixed_buffer, percentage_buffer)
-                    
-                    # Applica il buffer riducendo la quantità di margine da rimuovere
-                    margin_diff = margin_diff + applied_buffer
-                    
-                    logger.info(f"Buffer applicato per riduzione margine:")
-                    logger.info(f"  - Riduzione originale: {reduction_amount:.2f} USDT")
-                    logger.info(f"  - Buffer fisso: {fixed_buffer:.2f} USDT")
-                    logger.info(f"  - Buffer percentuale (3%): {percentage_buffer:.2f} USDT")
-                    logger.info(f"  - Buffer applicato: {applied_buffer:.2f} USDT")
-                    logger.info(f"  - Riduzione finale: {abs(margin_diff):.2f} USDT")
+                    # Usa il simbolo dalla posizione del database, non dalla posizione exchange
+                    symbol_to_use = symbol_from_db or position.get('symbol', '')
+                    max_removable = self.get_bitmex_max_removable_margin(symbol_to_use, api_keys)
+                    if max_removable is not None:
+                        reduction_amount = abs(margin_diff)
+                        # Applica 90% del margine massimo rimovibile per sicurezza
+                        safe_max_removable = max_removable * 0.9
+                        
+                        if reduction_amount > safe_max_removable:
+                            # Limita la riduzione al massimo sicuro
+                            margin_diff = -safe_max_removable
+                            logger.info(f"Riduzione limitata dal posCross di BitMEX:")
+                            logger.info(f"  - Riduzione richiesta: {reduction_amount:.2f} USDT")
+                            logger.info(f"  - Margine max rimovibile: {max_removable:.2f} USDT")
+                            logger.info(f"  - Riduzione sicura (90%): {safe_max_removable:.2f} USDT")
+                            logger.info(f"  - Riduzione finale: {abs(margin_diff):.2f} USDT")
+                        else:
+                            logger.info(f"Riduzione entro i limiti BitMEX: {reduction_amount:.2f} USDT (max: {max_removable:.2f} USDT)")
+                    else:
+                        logger.warning("Impossibile ottenere posCross da BitMEX, procedendo senza controllo")
                 
             else:
                 logger.error(f"Exchange {exchange_name} non supportato per calcolo aggiustamento margine")
@@ -734,6 +733,52 @@ class Balancer:
         except Exception as e:
             logger.error(f"Errore aggiustamento margine BitMEX: {e}")
             return False
+
+    def get_bitmex_max_removable_margin(self, symbol: str, api_keys: dict) -> Optional[float]:
+        """Ottiene il margine massimo rimovibile da BitMEX tramite API /position"""
+        try:
+            # Usa l'exchange già inizializzato tramite CCXT
+            exchange = exchange_manager.exchanges.get('bitmex')
+            if not exchange:
+                logger.error("Exchange BitMEX non inizializzato")
+                return None
+            
+            # Il simbolo su BitMEX è già nel formato corretto
+            bitmex_symbol = symbol  # Usa il simbolo così com'è
+            logger.info(f"Simbolo per posCross: {symbol}")
+            
+            # Ottieni tutte le posizioni tramite CCXT
+            positions = exchange.fetch_positions()
+            logger.info(f"Trovate {len(positions)} posizioni totali su BitMEX")
+            
+            # Cerca la posizione specifica
+            for position in positions:
+                if position.get('symbol') == bitmex_symbol:
+                    # Cerca il campo posCross nei dati raw
+                    info = position.get('info', {})
+                    pos_cross_raw = info.get('posCross', 0)
+                    
+                    # Converti pos_cross in numero se è una stringa
+                    try:
+                        pos_cross = int(pos_cross_raw) if pos_cross_raw else 0
+                    except (ValueError, TypeError):
+                        pos_cross = 0
+                    
+                    logger.info(f"posCross BitMEX per {bitmex_symbol}: {pos_cross} Satoshi = {pos_cross / 1_000_000:.6f} USDT")
+                    
+                    # Controlla se la posizione è attiva (contracts diverso da 0)
+                    if position.get('contracts', 0) != 0 and pos_cross > 0:
+                        # Converte da Satoshi USDT a USDT (dividi per 1.000.000)
+                        max_removable = pos_cross / 1_000_000
+                        logger.info(f"posCross BitMEX per {bitmex_symbol}: {pos_cross} Satoshi = {max_removable:.6f} USDT")
+                        return max_removable
+            
+            logger.warning(f"Nessuna posizione attiva trovata per {bitmex_symbol} su BitMEX")
+            return None
+                
+        except Exception as e:
+            logger.error(f"Errore chiamata API BitMEX /position: {e}")
+            return None
 
 
 def main():
