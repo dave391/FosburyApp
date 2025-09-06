@@ -455,6 +455,31 @@ class Balancer:
                 # Calcola differenza
                 margin_diff = target_margin - current_margin
                 
+                # Applica buffer ibrido per BitMEX quando si riduce il margine
+                # Questo previene l'errore "insufficient isolated margin"
+                if margin_diff < 0:  # Solo quando si riduce il margine
+                    # Buffer ibrido: combina buffer minimo fisso con percentuale
+                    # - Buffer fisso: 0.50 USDT (protegge posizioni piccole)
+                    # - Buffer percentuale: 3% della riduzione (scala con posizioni grandi)
+                    # Usa il valore maggiore tra i due per massima sicurezza
+                    
+                    reduction_amount = abs(margin_diff)  # Quantità di riduzione richiesta
+                    fixed_buffer = 0.50  # Buffer fisso di 0.50 USDT
+                    percentage_buffer = reduction_amount * 0.03  # 3% della riduzione
+                    
+                    # Scegli il buffer maggiore tra fisso e percentuale
+                    applied_buffer = max(fixed_buffer, percentage_buffer)
+                    
+                    # Applica il buffer riducendo la quantità di margine da rimuovere
+                    margin_diff = margin_diff + applied_buffer
+                    
+                    logger.info(f"Buffer applicato per riduzione margine:")
+                    logger.info(f"  - Riduzione originale: {reduction_amount:.2f} USDT")
+                    logger.info(f"  - Buffer fisso: {fixed_buffer:.2f} USDT")
+                    logger.info(f"  - Buffer percentuale (3%): {percentage_buffer:.2f} USDT")
+                    logger.info(f"  - Buffer applicato: {applied_buffer:.2f} USDT")
+                    logger.info(f"  - Riduzione finale: {abs(margin_diff):.2f} USDT")
+                
             else:
                 logger.error(f"Exchange {exchange_name} non supportato per calcolo aggiustamento margine")
                 return None
