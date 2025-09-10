@@ -193,14 +193,9 @@ class Balancer:
             # Calcola la leva effettiva
             effective_leverage = None
             if exchange_name.lower() == "bitfinex":
-                # Per Bitfinex, ottieni la leva direttamente dalla posizione
-                effective_leverage = exchange_position.get('leverage', 0)
-                if effective_leverage == 0:
-                    # Fallback al calcolo manuale solo se non disponibile direttamente
-                    effective_leverage = self.calculate_effective_leverage(exchange_position, exchange_name)
-                    logger.warning("Leva Bitfinex calcolata manualmente come fallback")
-                else:
-                    logger.info("Leva Bitfinex ottenuta direttamente dalla posizione")
+                # Per Bitfinex, calcola sempre manualmente la leva effettiva
+                # usando il prezzo corrente invece della leva restituita dall'exchange
+                effective_leverage = self.calculate_effective_leverage(exchange_position, exchange_name)
             else:
                 effective_leverage = self.calculate_effective_leverage(exchange_position, exchange_name)
             
@@ -225,7 +220,7 @@ class Balancer:
                 
                 # Esegui il ribilanciamento
                 if exchange_name.lower() == "bitfinex":
-                    success = self.adjust_bitfinex_margin(exchange_position, margin_diff, api_keys, symbol)
+                    success = self.adjust_bitfinex_margin(exchange_position, margin_diff, api_keys, symbol, target_leverage)
                 elif exchange_name.lower() == "bitmex":
                     success = self.adjust_bitmex_margin(exchange_position, margin_diff, api_keys, symbol)
                 else:
@@ -323,22 +318,35 @@ class Balancer:
         try:
             # Estrai i dati necessari dalla posizione
             if exchange_name.lower() == "bitfinex":
-                # Per Bitfinex, ottieni la leva direttamente dalla posizione
-                # invece di calcolarla come notional/margin
-                leverage = position.get('leverage', 0)
+                # Per Bitfinex, il notional rappresenta effettivamente la size della posizione
+                # Calcola sempre manualmente la leva effettiva usando il prezzo corrente
+                size = position.get('notional', 0)  # Per Bitfinex, notional = size in SOL
+                margin = position.get('collateral') or position.get('margin') or position.get('initialMargin', 0)
                 
-                if leverage == 0:
-                    # Fallback al calcolo manuale solo se non disponibile direttamente
-                    notional = position.get('notional', 0)  # Valore della posizione
-                    margin = position.get('collateral') or position.get('margin') or position.get('initialMargin', 0)
-                    
-                    if notional == 0 or margin == 0:
-                        logger.error(f"Dati insufficienti per calcolare leva: notional={notional}, margin={margin}")
-                        return None
-                    
-                    # Calcola leva: valore posizione / margine
-                    leverage = abs(notional / margin)
-                    logger.warning("Leva calcolata manualmente come fallback")
+                # Ottieni il prezzo corrente di Solana
+                current_price = exchange_manager.get_solana_price(exchange_name)
+                if not current_price:
+                    logger.error(f"Impossibile ottenere prezzo corrente per calcolo leva")
+                    return None
+                
+                if size == 0 or margin == 0:
+                    logger.error(f"Dati insufficienti per calcolare leva: size={size}, margin={margin}")
+                    return None
+                
+                # Calcola nominal value con prezzo corrente
+                nominal_value = abs(size * current_price)
+                
+                # Calcola leva effettiva: valore posizione / margine
+                leverage = nominal_value / margin
+                
+                # Debug dettagliato del calcolo
+                logger.info(f"=== DEBUG CALCOLO LEVA BITFINEX ===")
+                logger.info(f"Size posizione (notional): {size} SOL")
+                logger.info(f"Prezzo corrente SOL: {current_price:.4f} USDT")
+                logger.info(f"Margine/Collaterale: {margin:.4f} USDT")
+                logger.info(f"Calcolo: |{size} * {current_price:.4f}| / {margin:.4f} = {nominal_value:.4f} / {margin:.4f} = {leverage:.4f}X")
+                logger.info(f"Leva effettiva finale: {leverage:.2f}X")
+                logger.info(f"=== FINE DEBUG CALCOLO LEVA ===")
                 
             elif exchange_name.lower() == "bitmex":
                 # Per BitMEX
@@ -393,18 +401,25 @@ class Balancer:
         try:
             # Estrai i dati necessari dalla posizione
             if exchange_name.lower() == "bitfinex":
-                # Per Bitfinex
-                size = position.get('notional', 0)  # Valore della posizione
+                # Per Bitfinex, il notional rappresenta effettivamente la size della posizione
+                size = position.get('notional', 0)  # Per Bitfinex, notional = size in SOL
                 entry_price = position.get('entryPrice', 0)  # Prezzo di entrata
                 current_margin = position.get('collateral') or position.get('margin') or position.get('initialMargin', 0)
                 unrealized_pnl = position.get('unrealizedPnl', 0)  # PnL non realizzato
+                symbol = position.get('symbol', '')
                 
-                if size == 0 or entry_price == 0 or current_margin == 0:
-                    logger.error(f"Dati insufficienti per calcolare aggiustamento: size={size}, entry_price={entry_price}, margin={current_margin}")
+                # Ottieni il prezzo corrente di Solana
+                current_price = exchange_manager.get_solana_price(exchange_name)
+                if not current_price:
+                    logger.error(f"Impossibile ottenere prezzo corrente per {symbol}")
                     return None
                 
-                # Valore nominale della posizione (senza PnL)
-                nominal_value = abs(size * entry_price)
+                if size == 0 or current_margin == 0:
+                    logger.error(f"Dati insufficienti per calcolare aggiustamento: size={size}, margin={current_margin}")
+                    return None
+                
+                # Valore nominale della posizione usando prezzo corrente
+                nominal_value = abs(size * current_price)
                 
                 # Calcola margine base per leva target
                 base_margin = nominal_value / target_leverage
@@ -415,7 +430,8 @@ class Balancer:
                 # Il margine non può essere negativo o troppo basso
                 target_margin = max(target_margin, 0.05)  # Minimo 0.05 USDT per evitare errore "collateral: insufficient"
                 
-                logger.info(f"Size posizione (notional): {size}")
+                logger.info(f"Size posizione: {size} SOL")
+                logger.info(f"Prezzo corrente: {current_price:.4f} USDT")
                 logger.info(f"Prezzo entrata: {entry_price:.4f} USDT")
                 logger.info(f"PnL non realizzato: {unrealized_pnl:.4f} USDT")
                 logger.info(f"Valore nominale posizione: {nominal_value:.2f} USDT")
@@ -498,7 +514,7 @@ class Balancer:
             logger.error(f"Errore calcolo aggiustamento margine: {e}")
             return None
     
-    def adjust_bitfinex_margin(self, position: Dict, margin_diff: float, api_keys: Dict, symbol: str) -> bool:
+    def adjust_bitfinex_margin(self, position: Dict, margin_diff: float, api_keys: Dict, symbol: str, target_leverage: float) -> bool:
         """Aggiusta il margine della posizione su Bitfinex
         
         Args:
@@ -506,6 +522,7 @@ class Balancer:
             margin_diff: Differenza di margine (positiva = aggiungere, negativa = rimuovere)
             api_keys: API keys dell'utente
             symbol: Simbolo della posizione
+            target_leverage: Leva target per la verifica
             
         Returns:
             True se successo, False altrimenti
@@ -560,7 +577,6 @@ class Balancer:
                         logger.info(f"Leva effettiva dopo aggiustamento: {current_leverage:.4f}X")
                         
                         # Verifica se la leva è vicina al target (tolleranza di 0.5X)
-                        target_leverage = 3.0  # Leva target fissa a 3X
                         if abs(current_leverage - target_leverage) < 0.5:
                             logger.info(f"Leva aggiustata con successo (target: {target_leverage:.1f}X, attuale: {current_leverage:.4f}X)")
                         else:
