@@ -1,6 +1,7 @@
 [theme]
 base = "dark"
 baseFontSize = 15
+font = "Space Grotesk"
 primaryColor = "#FFFFFF"
 backgroundColor = "#121212"
 secondaryBackgroundColor = "#333333"
@@ -14,3 +15,10 @@ baseRadius = "0.3rem"
 backgroundColor = "#000000"
 secondaryBackgroundColor = "#333333"
 borderColor = "#696969"
+
+[client]
+showSidebarNavigation = false
+toolbarMode = "minimal"
+
+[ui]
+hideTopBar = true

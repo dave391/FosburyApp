@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+/* Apply Space Grotesk font to all elements */
+html, body, [class*="css"] {
+    font-family: 'Space Grotesk', sans-serif !important;
+}
+
+/* Ensure the font is applied to Streamlit components */
+.stApp {
+    font-family: 'Space Grotesk', sans-serif !important;
+}
+
+/* Apply to text elements */
+h1, h2, h3, h4, h5, h6, p, div, span, label {
+    font-family: 'Space Grotesk', sans-serif !important;
+}
+
+/* Apply to input elements */
+input, textarea, select {
+    font-family: 'Space Grotesk', sans-serif !important;
+}
+
+/* Apply to buttons */
+button {
+    font-family: 'Space Grotesk', sans-serif !important;
+}

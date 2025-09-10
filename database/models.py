@@ -91,6 +91,36 @@ class UserManager:
             logger.error(f"Errore autenticazione: {e}")
             return None
     
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        """Recupera utente per email"""
+        try:
+            user = self.users.find_one({"email": email})
+            if user:
+                return {
+                    "user_id": str(user["_id"]),
+                    "email": user["email"],
+                    "created_at": user.get("created_at")
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Errore recupero utente per email: {e}")
+            return None
+    
+    def get_user_by_id(self, user_id: str) -> Optional[Dict]:
+        """Recupera utente per user_id"""
+        try:
+            user = self.users.find_one({"_id": ObjectId(user_id)})
+            if user:
+                return {
+                    "user_id": str(user["_id"]),
+                    "email": user["email"],
+                    "created_at": user.get("created_at")
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Errore recupero utente per ID: {e}")
+            return None
+    
     def update_api_keys(self, user_id: str, exchange: str, api_key: str, api_secret: str) -> bool:
         """Aggiorna API keys per exchange"""
         try:

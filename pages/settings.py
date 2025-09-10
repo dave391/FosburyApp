@@ -80,16 +80,13 @@ def show_settings_page():
         st.error("Devi effettuare il login per accedere alle impostazioni")
         return
     
-    st.title("Impostazioni API Keys e Wallet")
-    st.write("Configura le tue API keys e wallet addresses per gli exchange supportati.")
-    
     # Recupera API keys e wallets esistenti
     user_id = st.session_state.user_id
     current_keys = user_manager.get_user_api_keys(user_id)
     current_wallets = user_manager.get_user_wallets(user_id)
     
     # Sezione Bitfinex
-    st.subheader("🔹 Bitfinex API Keys e Wallet")
+    st.subheader("Bitfinex API Keys e Wallet")
     
     with st.form("bitfinex_form"):
         col1, col2 = st.columns(2)
@@ -120,7 +117,7 @@ def show_settings_page():
         
         col1, col2 = st.columns([1, 1])
         with col1:
-            test_bitfinex = st.form_submit_button("🧪 Testa Connessione", use_container_width=True)
+            test_bitfinex = st.form_submit_button("Testa Connessione", use_container_width=True)
         with col2:
             save_bitfinex = st.form_submit_button("Salva Bitfinex", use_container_width=True)
         
@@ -155,7 +152,7 @@ def show_settings_page():
     st.divider()
     
     # Sezione Bitmex
-    st.subheader("🔸 Bitmex API Keys e Wallet")
+    st.subheader("Bitmex API Keys e Wallet")
     
     with st.form("bitmex_form"):
         col1, col2 = st.columns(2)
@@ -186,7 +183,7 @@ def show_settings_page():
         
         col1, col2 = st.columns([1, 1])
         with col1:
-            test_bitmex = st.form_submit_button("🧪 Testa Connessione", use_container_width=True)
+            test_bitmex = st.form_submit_button("Testa Connessione", use_container_width=True)
         with col2:
             save_bitmex = st.form_submit_button("Salva Bitmex", use_container_width=True)
         
@@ -217,8 +214,3 @@ def show_settings_page():
                     st.error("Errore nel salvataggio")
             else:
                 st.warning("Inserisci entrambe le chiavi per salvare")
-    
-    # Info di sicurezza
-    st.info("Le API keys e i wallet addresses vengono salvati in modo crittografato nel database.")
-    st.warning("Assicurati che le API keys abbiano i permessi di trading sui futures.")
-    st.info("I wallet addresses sono opzionali e possono essere utilizzati per operazioni di deposito/prelievo.")
