@@ -142,7 +142,7 @@ class TradingOpener:
             
             logger.info("✅ Controllo capitale completato con successo")
             
-            logger.info(f"Capitale reale totale: {capital}, Per exchange: {capital_per_exchange}")
+            logger.info(f"Capitale reale totale: {capital}, Per exchange: {capital_per_exchange_check}")
             logger.info(f"Capitale con leva per exchange: {capital_with_leverage} (per calcolo size)")
             
             # Ottieni prezzi SOLANA
