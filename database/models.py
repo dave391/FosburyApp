@@ -208,7 +208,7 @@ class BotManager:
     
     def create_bot_config(self, user_id: str, exchange_long: str, exchange_short: str, 
                          capital: float, leverage: float, rebalance_threshold: float, 
-                         safety_threshold: float) -> bool:
+                         safety_threshold: float, stop_loss_percentage: float) -> bool:
         """Crea nuova istanza bot (sempre una nuova entry)"""
         try:
             # Verifica che l'utente esista
@@ -246,6 +246,7 @@ class BotManager:
                 "leverage": leverage,
                 "rebalance_threshold": rebalance_threshold,
                 "safety_threshold": safety_threshold,
+                "stop_loss_percentage": stop_loss_percentage,
                 "status": BOT_STATUS["READY"],
                 "created_at": datetime.utcnow(),
                 "started_at": None,
@@ -386,21 +387,23 @@ class BotManager:
     
     def add_missing_fields_to_bots(self):
         """
-        Aggiunge i campi mancanti (rebalance_threshold, safety_threshold) ai bot esistenti
+        Aggiunge i campi mancanti (rebalance_threshold, safety_threshold, stop_loss_percentage) ai bot esistenti
         
         Returns:
             int: Numero di bot aggiornati
         """
         try:
-            # Aggiorna tutti i bot che non hanno i campi rebalance_threshold e safety_threshold
+            # Aggiorna tutti i bot che non hanno i campi rebalance_threshold, safety_threshold e stop_loss_percentage
             result = self.bots.update_many(
                 {"$or": [
                     {"rebalance_threshold": {"$exists": False}},
-                    {"safety_threshold": {"$exists": False}}
+                    {"safety_threshold": {"$exists": False}},
+                    {"stop_loss_percentage": {"$exists": False}}
                 ]},
                 {"$set": {
                     "rebalance_threshold": None,
-                    "safety_threshold": None
+                    "safety_threshold": None,
+                    "stop_loss_percentage": None
                 }}
             )
             

@@ -94,7 +94,23 @@ class TransferManager:
                 return {"success": False, "error": f"Capitale insufficiente: {total_balance} < {required_capital}"}
             
             # Calcola trasferimento necessario
-            transfer_info = self._calculate_transfer_amount(balances, capital, exchange_long, exchange_short)
+            transfer_info = self._calculate_transfer_amount(
+                balances, 
+                capital, 
+                exchange_long, 
+                exchange_short, 
+                bot.get('stop_loss_percentage', 20)
+            )
+            
+            # Controlla se è stato attivato lo stop loss
+            if transfer_info.get("stop_loss_triggered", False):
+                logger.warning(f"Bot {bot['_id']}: Stop loss attivato! Fermo il bot.")
+                bot_manager.update_bot_status(
+                    str(bot['_id']), 
+                    BOT_STATUS['STOPPED'], 
+                    stopped_type="stop_loss"
+                )
+                return {"success": False, "message": "Bot fermato per stop loss attivato"}
             
             if transfer_info["amount"] == 0:
                 logger.info(f"Bot {bot['_id']}: bilanci già equilibrati")
@@ -293,20 +309,53 @@ class TransferManager:
             logger.error(f"Errore recupero bilanci: {e}")
             return None
     
-    def _calculate_transfer_amount(self, balances: Dict, capital: float, exchange_long: str, exchange_short: str) -> Dict:
-        """Calcola importo da trasferire per riequilibrare i fondi"""
+    def _calculate_transfer_amount(self, balances: Dict, capital: float, exchange_long: str, exchange_short: str, stop_loss_percentage: float) -> Dict:
+        """Calcola importo da trasferire per riequilibrare i fondi con logica a tre livelli"""
         try:
-            target_per_exchange = capital / 2  # Capitale target per exchange
-            
+            # Calcola available_balance (somma dei bilanci attuali)
             long_balance = balances[exchange_long]
             short_balance = balances[exchange_short]
+            available_balance = long_balance + short_balance
+            
+            # Calcola soglia stop loss
+            stop_loss_buffer = capital * (stop_loss_percentage / 100)
+            stop_loss_threshold = capital - stop_loss_buffer
+            
+            logger.info(f"Capitale configurato: {capital} USDT")
+            logger.info(f"Available balance: {available_balance} USDT")
+            logger.info(f"Stop loss threshold: {stop_loss_threshold} USDT (capitale - {stop_loss_percentage}%)")
+            
+            # LIVELLO 1: Controllo stop loss
+            if available_balance < stop_loss_threshold:
+                logger.warning(f"Stop loss attivato: available_balance ({available_balance}) < stop_loss_threshold ({stop_loss_threshold})")
+                return {
+                    "amount": 0, 
+                    "from_exchange": None, 
+                    "to_exchange": None, 
+                    "stop_loss_triggered": True,
+                    "error": "Stop loss attivato"
+                }
+            
+            # LIVELLO 2: Determina base per calcoli
+            if available_balance > capital:
+                # Usa capital come base (caso di profitto)
+                base_amount = capital
+                logger.info(f"Usando capital come base: {base_amount} USDT (available_balance > capital)")
+            else:
+                # Usa available_balance come base
+                base_amount = available_balance
+                logger.info(f"Usando available_balance come base: {base_amount} USDT")
+            
+            # LIVELLO 3: Calcola target con commissioni di trasferimento
+            # Aggiungi 2 USDT al denominatore per le commissioni
+            target_per_exchange = (base_amount + 2) / 2
             
             long_deficit = target_per_exchange - long_balance
             short_deficit = target_per_exchange - short_balance
             
-            logger.info(f"Target per exchange: {target_per_exchange} USDT")
-            logger.info(f"{exchange_long} deficit: {long_deficit} USDT (target - saldo_attuale)")
-            logger.info(f"{exchange_short} deficit: {short_deficit} USDT (target - saldo_attuale)")
+            logger.info(f"Target per exchange (con commissioni): {target_per_exchange} USDT")
+            logger.info(f"{exchange_long} deficit: {long_deficit} USDT")
+            logger.info(f"{exchange_short} deficit: {short_deficit} USDT")
             
             # Caso 1: Entrambi hanno deficit - impossibile trasferire
             if long_deficit > 0 and short_deficit > 0:
@@ -325,7 +374,12 @@ class TransferManager:
                     logger.error(f"{exchange_short} non ha fondi sufficienti per coprire il deficit di {exchange_long}")
                     return {"amount": 0, "from_exchange": None, "to_exchange": None, "error": "Fondi insufficienti"}
                 
-                transfer_amount = round(long_deficit, 2)
+                # Sottrai 1 USDT per commissioni dal trasferimento effettivo
+                transfer_amount = round(long_deficit - 1, 2)
+                if transfer_amount <= 0:
+                    logger.info("Trasferimento troppo piccolo dopo deduzione commissioni")
+                    return {"amount": 0, "from_exchange": None, "to_exchange": None}
+                
                 return {
                     "amount": transfer_amount,
                     "from_exchange": exchange_short,
@@ -338,7 +392,12 @@ class TransferManager:
                     logger.error(f"{exchange_long} non ha fondi sufficienti per coprire il deficit di {exchange_short}")
                     return {"amount": 0, "from_exchange": None, "to_exchange": None, "error": "Fondi insufficienti"}
                 
-                transfer_amount = round(short_deficit, 2)
+                # Sottrai 1 USDT per commissioni dal trasferimento effettivo
+                transfer_amount = round(short_deficit - 1, 2)
+                if transfer_amount <= 0:
+                    logger.info("Trasferimento troppo piccolo dopo deduzione commissioni")
+                    return {"amount": 0, "from_exchange": None, "to_exchange": None}
+                
                 return {
                     "amount": transfer_amount,
                     "from_exchange": exchange_long,

@@ -105,14 +105,37 @@ class TradingOpener:
                 return False
             
             # CONTROLLO CAPITALE TOTALE E DISTRIBUZIONE
-            capital_per_exchange = capital / 2
-            capital_with_leverage = capital_per_exchange * leverage  # Applica leva per calcolo size
+            # Prima calcola available_balance (somma dei bilanci attuali)
+            long_balance = self._get_exchange_balance(exchange_long, balance_type='total')
+            short_balance = self._get_exchange_balance(exchange_short, balance_type='total')
+            available_balance = long_balance + short_balance
             
-            logger.info(f"Controllo capitale richiesto per exchange: {capital_per_exchange} USDT")
+            logger.info(f"Capitale configurato: {capital} USDT")
+            logger.info(f"Available balance: {available_balance} USDT")
+            
+            # Determina quale valore usare per il position sizing
+            if available_balance < capital:
+                # Usa available_balance per position sizing
+                base_amount_for_sizing = available_balance
+                logger.info(f"Usando available_balance per position sizing: {base_amount_for_sizing} USDT (available_balance < capital)")
+            else:
+                # Usa capital per position sizing
+                base_amount_for_sizing = capital
+                logger.info(f"Usando capital per position sizing: {base_amount_for_sizing} USDT (available_balance >= capital)")
+            
+            # Calcola capital_per_exchange per position sizing
+            capital_per_exchange_sizing = base_amount_for_sizing / 2
+            capital_with_leverage = capital_per_exchange_sizing * leverage  # Applica leva per calcolo size
+            
+            # Per il controllo dei requisiti, usa sempre capital configurato
+            capital_per_exchange_check = capital / 2
+            
+            logger.info(f"Controllo capitale richiesto per exchange: {capital_per_exchange_check} USDT")
+            logger.info(f"Capitale per sizing per exchange: {capital_per_exchange_sizing} USDT")
             logger.info(f"Capitale con leva per exchange: {capital_with_leverage} USDT (per ordini)")
             
-            # Usa capital_per_exchange per il controllo dei requisiti di capitale
-            capital_check = self.check_capital_requirements(exchange_long, exchange_short, capital_per_exchange)
+            # Usa capital_per_exchange_check per il controllo dei requisiti di capitale
+            capital_check = self.check_capital_requirements(exchange_long, exchange_short, capital_per_exchange_check)
             if not capital_check['overall_success']:
                 logger.error(f"Controllo capitale fallito: {capital_check}")
                 return self._handle_balance_failure(capital_check, user_id)

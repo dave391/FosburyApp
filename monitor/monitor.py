@@ -181,23 +181,39 @@ class PriceMonitor:
             }
     
     def check_bot_triggers(self) -> None:
-        """Controlla trigger per tutti i bot running"""
+        """
+        Controlla trigger per bot con posizioni aperte
+        
+        Safety trigger: funziona per bot in stati con posizioni aperte
+        Rebalance trigger: funziona solo per bot in stato 'running'
+        """
         try:
-            # Recupera tutti i bot con status 'running'
+            # Recupera bot per safety trigger (stati con posizioni potenzialmente aperte)
+            safety_bots = []
+            safety_bots.extend(bot_manager.get_running_bots())
+            safety_bots.extend(bot_manager.get_transfer_requested_bots())
+            safety_bots.extend(bot_manager.get_stop_requested_bots())
+            
+            # Aggiungi bot in stato 'transfering' se esiste il metodo
+            try:
+                transfering_bots = list(bot_manager.bots.find({"status": "transfering"}))
+                safety_bots.extend(transfering_bots)
+            except:
+                pass
+            
+            # Controlla safety trigger per tutti i bot con posizioni aperte
+            for bot in safety_bots:
+                try:
+                    self.check_safety_trigger(bot)
+                except Exception as e:
+                    # Ignora errori per MVP come richiesto
+                    pass
+            
+            # Controlla rebalance trigger solo per bot running
             running_bots = bot_manager.get_running_bots()
-            
-            if not running_bots:
-                return
-            
-            # Controlla trigger per ogni bot
             for bot in running_bots:
                 try:
-                    # Controlla safety trigger
-                    self.check_safety_trigger(bot)
-                    
-                    # Controlla rebalance trigger
                     self.check_rebalance_trigger(bot)
-                    
                 except Exception as e:
                     # Ignora errori per MVP come richiesto
                     pass
@@ -207,7 +223,17 @@ class PriceMonitor:
             pass
     
     def check_safety_trigger(self, bot: Dict) -> None:
-        """Controlla safety trigger per un bot"""
+        """
+        Controlla safety trigger per un bot - SISTEMA DI SICUREZZA GLOBALE
+        
+        Questo trigger funziona per bot in qualsiasi stato con posizioni aperte:
+        - running: bot operativo
+        - transfer_requested: bot in attesa di trasferimento
+        - transfering: bot durante trasferimento
+        - stop_requested: ridondanza per sicurezza
+        
+        Il safety trigger ha PRIORITA' ASSOLUTA e può sovrascrivere qualsiasi stato
+        """
         try:
             if self.current_price is None:
                 return
@@ -232,6 +258,8 @@ class PriceMonitor:
                     continue
                 
                 # Controlla trigger in base al lato della posizione
+                # LONG: se prezzo scende sotto safety_value -> PERICOLO
+                # SHORT: se prezzo sale sopra safety_value -> PERICOLO
                 if side == "long" and self.current_price < safety_value:
                     trigger_activated = True
                     break
@@ -239,7 +267,7 @@ class PriceMonitor:
                     trigger_activated = True
                     break
             
-            # Se trigger attivato, cambia stato bot
+            # Se trigger attivato, forza stato STOP_REQUESTED per chiusura emergenza
             if trigger_activated:
                 bot_manager.update_bot_status(user_id, BOT_STATUS["STOP_REQUESTED"], "safety", "emergency_close")
                 
@@ -248,7 +276,14 @@ class PriceMonitor:
             pass
     
     def check_rebalance_trigger(self, bot: Dict) -> None:
-        """Controlla rebalance trigger per un bot"""
+        """
+        Controlla rebalance trigger per un bot - SOLO PER BOT RUNNING
+        
+        Il rebalance trigger funziona ESCLUSIVAMENTE per bot in stato 'running':
+        - È un'operazione di OTTIMIZZAZIONE, non di sicurezza
+        - Non ha senso fare rebalance se il bot è già in trasferimento o stop
+        - Ha priorità INFERIORE rispetto al safety trigger
+        """
         try:
             if self.current_price is None:
                 return
@@ -273,6 +308,8 @@ class PriceMonitor:
                     continue
                 
                 # Controlla trigger in base al lato della posizione
+                # LONG: se prezzo scende sotto rebalance_value -> riequilibra
+                # SHORT: se prezzo sale sopra rebalance_value -> riequilibra
                 if side == "long" and self.current_price < rebalance_value:
                     trigger_activated = True
                     break
@@ -280,7 +317,7 @@ class PriceMonitor:
                     trigger_activated = True
                     break
             
-            # Se trigger attivato, cambia stato bot
+            # Se trigger attivato, richiedi trasferimento per rebalancing
             if trigger_activated:
                 bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "rebalance", "rebalance")
                 
