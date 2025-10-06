@@ -269,7 +269,7 @@ class PriceMonitor:
             
             # Se trigger attivato, forza stato STOP_REQUESTED per chiusura emergenza
             if trigger_activated:
-                bot_manager.update_bot_status(user_id, BOT_STATUS["STOP_REQUESTED"], "safety", "emergency_close")
+                bot_manager.update_bot_status(user_id, BOT_STATUS["STOP_REQUESTED"], stopped_type="safety", transfer_reason="emergency_close")
                 
         except Exception as e:
             # Ignora errori per MVP come richiesto

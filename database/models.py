@@ -253,7 +253,8 @@ class BotManager:
                 "stopped_at": None,
                 "stopped_type": None,
                 "started_type": None,
-                "transfer_reason": None
+                "transfer_reason": None,
+                "transfer_amount": None
             }
             
             result = self.bots.insert_one(bot_data)
@@ -276,7 +277,7 @@ class BotManager:
             logger.error(f"Errore recupero bot: {e}")
             return None
     
-    def update_bot_status(self, user_id: str, status: str, stopped_type: str = None, started_type: str = None, transfer_reason: str = None) -> bool:
+    def update_bot_status(self, user_id: str, status: str, stopped_type: str = None, started_type: str = None, transfer_reason: str = None, transfer_amount: float = None) -> bool:
         """Aggiorna status dell'istanza bot più recente dell'utente"""
         try:
             # Trova l'istanza bot più recente
@@ -293,6 +294,8 @@ class BotManager:
                 update_data["started_at"] = datetime.utcnow()
                 update_data["stopped_at"] = None
                 update_data["stopped_type"] = None
+                if transfer_reason:
+                    update_data["transfer_reason"] = transfer_reason
                 
             elif status == BOT_STATUS["STOPPED"]:
                 # Bot fermato - imposta stopped_at e tipo
@@ -321,6 +324,13 @@ class BotManager:
                 # Bot richiede trasferimento - imposta stopped_type come motivo e transfer_reason
                 if stopped_type:
                     update_data["stopped_type"] = stopped_type
+                if transfer_reason:
+                    update_data["transfer_reason"] = transfer_reason
+                    
+            elif status == BOT_STATUS["EXTERNAL_TRANSFER_PENDING"]:
+                # Bot in attesa di trasferimento esterno - salva l'importo da trasferire
+                if transfer_amount is not None:
+                    update_data["transfer_amount"] = transfer_amount
                 if transfer_reason:
                     update_data["transfer_reason"] = transfer_reason
             
@@ -371,6 +381,14 @@ class BotManager:
             return list(self.bots.find({"status": BOT_STATUS["TRANSFER_REQUESTED"]}))
         except Exception as e:
             logger.error(f"Errore recupero bot transfer_requested: {e}")
+            return []
+    
+    def get_external_transfer_pending_bots(self) -> List[Dict]:
+        """Recupera tutti i bot con status 'external_transfer_pending'"""
+        try:
+            return list(self.bots.find({"status": BOT_STATUS["EXTERNAL_TRANSFER_PENDING"]}))
+        except Exception as e:
+            logger.error(f"Errore recupero bot external_transfer_pending: {e}")
             return []
     
     def get_user_bot_history(self, user_id: str, limit: int = 10) -> List[Dict]:

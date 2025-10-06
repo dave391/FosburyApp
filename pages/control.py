@@ -67,8 +67,8 @@ def show_control_page():
     # Recupera configurazione esistente
     current_bot = bot_manager.get_user_bot(user_id)
     
-    # Controlla se il bot è attivo (running, ready, stop_requested, transfer_requested, transfering)
-    if current_bot and current_bot.get("status") in [BOT_STATUS["RUNNING"], BOT_STATUS["READY"], BOT_STATUS["STOP_REQUESTED"], BOT_STATUS["TRANSFER_REQUESTED"], "transfering"]:
+    # Mostra sezione controllo per tutti gli status tranne "stopped"
+    if current_bot and current_bot.get("status") != BOT_STATUS["STOPPED"]:
         show_bot_control_section(current_bot, user_id)
         return
     

@@ -53,8 +53,8 @@ class TradingOpener:
                 result = self.execute_trading_strategy(bot)
                 
                 if result == "success":
-                    # Aggiorna status a running con timestamp started_at
-                    bot_manager.update_bot_status(bot['user_id'], BOT_STATUS["RUNNING"])
+                    # Aggiorna status a running con timestamp started_at e transfer_reason a waiting
+                    bot_manager.update_bot_status(bot['user_id'], BOT_STATUS["RUNNING"], transfer_reason="waiting")
                     logger.info(f"Bot {bot['user_id']} avviato con successo")
                 elif result == "insufficient_capital":
                     # Capitale totale insufficiente - bot già fermato da _handle_balance_failure
@@ -206,14 +206,24 @@ class TradingOpener:
             
             logger.info("STEP 1 OK - Capitale totale sufficiente")
             
-            # STEP 2: Controllo distribuzione tra exchange
+            # STEP 2: Controllo distribuzione tra exchange (con tolleranza 1%)
             target_per_exchange = required_amount
-            long_sufficient = long_balance >= target_per_exchange
-            short_sufficient = short_balance >= target_per_exchange
+            tolerance_percent = 1.0  # 1% di tolleranza
+            tolerance_amount = target_per_exchange * (tolerance_percent / 100.0)
+            min_acceptable_per_exchange = target_per_exchange - tolerance_amount
+            
+            long_sufficient = long_balance >= min_acceptable_per_exchange
+            short_sufficient = short_balance >= min_acceptable_per_exchange
+            
+            # Log se viene applicata la tolleranza
+            if long_balance < target_per_exchange and long_balance >= min_acceptable_per_exchange:
+                logger.info(f"TOLLERANZA APPLICATA - Long: {long_balance} < {target_per_exchange} ma >= {min_acceptable_per_exchange:.4f} (tolleranza 1%)")
+            if short_balance < target_per_exchange and short_balance >= min_acceptable_per_exchange:
+                logger.info(f"TOLLERANZA APPLICATA - Short: {short_balance} < {target_per_exchange} ma >= {min_acceptable_per_exchange:.4f} (tolleranza 1%)")
             
             if not (long_sufficient and short_sufficient):
-                logger.warning(f"STEP 2 FALLITO - Distribuzione tra exchange insufficiente")
-                logger.warning(f"Long: {long_balance}/{target_per_exchange}, Short: {short_balance}/{target_per_exchange}")
+                logger.warning(f"STEP 2 FALLITO - Distribuzione tra exchange insufficiente (anche con tolleranza 1%)")
+                logger.warning(f"Long: {long_balance}/{target_per_exchange} (min: {min_acceptable_per_exchange:.4f}), Short: {short_balance}/{target_per_exchange} (min: {min_acceptable_per_exchange:.4f})")
                 results['overall_success'] = False
                 results['needs_transfer'] = True
                 return results

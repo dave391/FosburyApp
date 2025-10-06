@@ -46,6 +46,7 @@ BOT_STATUS = {
     "STOP_REQUESTED": "stop_requested",
     "TRANSFER_REQUESTED": "transfer_requested",
     "TRANSFERING": "transfering",
+    "EXTERNAL_TRANSFER_PENDING": "external_transfer_pending",
     "READY_TO_RESTART": "ready_to_restart"
 }
 
