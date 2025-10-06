@@ -42,49 +42,101 @@ class Balancer:
         pass
     
     def run(self):
-        """Esegue il monitoraggio per cercare bot con stato "running" e ribilancia la leva"""
+        """Esegue il monitoraggio per cercare bot processabili e ribilancia la leva"""
+        logger.info("=== INIZIO CICLO BALANCER ===")
+        start_time = datetime.now()
+        
         try:
-            # Cerca bot con stato "running"
-            running_bots = self.get_running_bots()
+            # Recupera tutti i bot dal database
+            all_bots = self.get_all_bots()
             
-            # Cerca anche bot con stato "transfering" che hanno transfer_reason "rebalance"
-            transfering_bots = self.get_transfering_rebalance_bots()
+            # Filtra i bot processabili secondo la logica degli stati
+            processable_bots = self.filter_processable_bots(all_bots)
             
-            all_bots = running_bots + transfering_bots
-            
-            if all_bots:
-                logger.info(f"Trovati {len(all_bots)} bot da processare ({len(running_bots)} running, {len(transfering_bots)} transfering-rebalance)")
+            if processable_bots:
+                logger.info(f"Trovati {len(processable_bots)} bot da processare su {len(all_bots)} totali")
                 # Processa ogni bot
-                for bot in all_bots:
+                for bot in processable_bots:
                     self.process_bot(bot)
             else:
-                logger.info("Nessun bot da processare trovato")
+                logger.info(f"Nessun bot da processare trovato su {len(all_bots)} totali")
+            
+            # Log di completamento
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            logger.info(f"=== FINE CICLO BALANCER === (durata: {duration:.2f}s)")
             
         except Exception as e:
             logger.error(f"Errore nel ciclo di monitoraggio: {e}")
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            logger.error(f"=== CICLO BALANCER INTERROTTO === (durata: {duration:.2f}s)")
     
-    def get_running_bots(self) -> List[Dict]:
-        """Recupera tutti i bot con status 'running'"""
+    def get_all_bots(self) -> List[Dict]:
+        """Recupera tutti i bot dal database"""
         try:
-            return bot_manager.get_running_bots()
+            return list(bot_manager.bots.find({}))
         except Exception as e:
-            logger.error(f"Errore recupero bot running: {e}")
+            logger.error(f"Errore recupero bot: {e}")
             return []
     
-    def get_transfering_rebalance_bots(self) -> List[Dict]:
-        """Recupera tutti i bot con status 'transfering' e transfer_reason 'rebalance'"""
-        try:
-            # Usa get_ready_bots che include anche bot transfering, poi filtra
-            ready_bots = bot_manager.get_ready_bots()
-            transfering_rebalance_bots = [
-                bot for bot in ready_bots 
-                if bot.get('status') == BOT_STATUS['TRANSFERING'] 
-                and bot.get('transfer_reason') == 'rebalance'
-            ]
-            return transfering_rebalance_bots
-        except Exception as e:
-            logger.error(f"Errore recupero bot transfering-rebalance: {e}")
-            return []
+    def filter_processable_bots(self, all_bots: List[Dict]) -> List[Dict]:
+        """Filtra i bot processabili secondo la logica degli stati
+        
+        Bot processabili:
+        - RUNNING: sempre processabile
+        - TRANSFERING con transfer_reason = "rebalance": processabile
+        
+        Bot NON processabili:
+        - STOPPED: bot fermato
+        - TRANSFER_REQUESTED: in attesa di trasferimento interno
+        - EXTERNAL_TRANSFER_PENDING: in attesa di trasferimento esterno
+        - TRANSFERING con transfer_reason diverso da "rebalance"
+        - Altri stati
+        """
+        processable_bots = []
+        skipped_count = {"stopped": 0, "transfer_requested": 0, "external_transfer_pending": 0, "transfering_other": 0, "other": 0}
+        
+        for bot in all_bots:
+            bot_id = bot.get("_id")
+            status = bot.get("status")
+            transfer_reason = bot.get("transfer_reason")
+            
+            # Stati critici - NON processare
+            if status == BOT_STATUS["STOPPED"]:
+                logger.debug(f"Bot {bot_id}: saltato (stato: STOPPED)")
+                skipped_count["stopped"] += 1
+                continue
+            elif status == BOT_STATUS["TRANSFER_REQUESTED"]:
+                logger.debug(f"Bot {bot_id}: saltato (stato: TRANSFER_REQUESTED)")
+                skipped_count["transfer_requested"] += 1
+                continue
+            elif status == BOT_STATUS["EXTERNAL_TRANSFER_PENDING"]:
+                logger.debug(f"Bot {bot_id}: saltato (stato: EXTERNAL_TRANSFER_PENDING)")
+                skipped_count["external_transfer_pending"] += 1
+                continue
+            elif status == BOT_STATUS["TRANSFERING"] and transfer_reason != "rebalance":
+                logger.debug(f"Bot {bot_id}: saltato (stato: TRANSFERING, motivo: {transfer_reason})")
+                skipped_count["transfering_other"] += 1
+                continue
+            
+            # Stati processabili
+            elif status == BOT_STATUS["RUNNING"]:
+                logger.debug(f"Bot {bot_id}: processabile (stato: RUNNING)")
+                processable_bots.append(bot)
+            elif status == BOT_STATUS["TRANSFERING"] and transfer_reason == "rebalance":
+                logger.debug(f"Bot {bot_id}: processabile (stato: TRANSFERING, motivo: rebalance)")
+                processable_bots.append(bot)
+            else:
+                logger.debug(f"Bot {bot_id}: saltato (stato sconosciuto: {status})")
+                skipped_count["other"] += 1
+        
+        # Log riassuntivo
+        if any(skipped_count.values()):
+            skipped_details = [f"{reason}: {count}" for reason, count in skipped_count.items() if count > 0]
+            logger.info(f"Bot saltati: {skipped_details}")
+        
+        return processable_bots
     
     def process_bot(self, bot: Dict):
         """Processa un bot con stato "running"
@@ -120,6 +172,15 @@ class Balancer:
                 logger.error(f"API keys non trovate per utente {user_id}")
                 return
             
+            # Consolida wallet Bitfinex prima del rebalancing
+            logger.info(f"Avvio consolidamento wallet Bitfinex per bot {bot_id}")
+            consolidation_success = self.consolidate_bitfinex_wallets(user_id, api_keys)
+            
+            if not consolidation_success:
+                logger.warning(f"Consolidamento wallet fallito per bot {bot_id}, procedo comunque con il rebalancing")
+            else:
+                logger.info(f"Consolidamento wallet completato per bot {bot_id}")
+            
             # Inizializza gli exchange necessari
             exchanges_to_init = set(pos["exchange"] for pos in open_positions)
             initialized_exchanges = set()
@@ -145,6 +206,9 @@ class Balancer:
                     logger.error(f"Impossibile inizializzare {exchange_name}")
             
             # Analizza e ribilancia le posizioni
+            all_positions_success = True
+            processed_positions = 0
+            
             for position in open_positions:
                 try:
                     exchange_name = position["exchange"]
@@ -152,24 +216,43 @@ class Balancer:
                     # Verifica che l'exchange sia stato inizializzato
                     if exchange_name not in initialized_exchanges:
                         logger.warning(f"Exchange {exchange_name} non inizializzato, salto posizione")
+                        all_positions_success = False
                         continue
                     
                     # Analizza la posizione e calcola la leva effettiva
-                    self.analyze_and_balance_position(position, target_leverage, api_keys)
+                    position_success = self.analyze_and_balance_position(position, target_leverage, api_keys)
+                    
+                    if position_success:
+                        processed_positions += 1
+                    else:
+                        all_positions_success = False
                     
                 except Exception as e:
                     logger.error(f"Errore nel processare posizione {position.get('position_id')}: {e}")
+                    all_positions_success = False
+            
+            # Gestisci aggiornamento stato in base al risultato delle operazioni
+            current_status = bot.get("status")
+            if current_status == BOT_STATUS.TRANSFERING and all_positions_success and processed_positions > 0:
+                self.update_bot_status_to_running(bot_id, processed_positions)
+            elif current_status == BOT_STATUS.TRANSFERING and not all_positions_success:
+                logger.info(f"Bot {bot_id} rimane in stato TRANSFERING - alcune operazioni di balancing non sono riuscite")
+            elif current_status == BOT_STATUS.RUNNING and all_positions_success and processed_positions > 0:
+                logger.info(f"✅ Bot {bot_id} processato con successo - {processed_positions} posizioni bilanciate (stato: RUNNING)")
             
         except Exception as e:
             logger.error(f"Errore nel processare bot {bot.get('_id')}: {e}")
     
-    def analyze_and_balance_position(self, position: Dict, target_leverage: float, api_keys: Dict):
+    def analyze_and_balance_position(self, position: Dict, target_leverage: float, api_keys: Dict) -> bool:
         """Analizza una posizione, calcola la leva effettiva e ribilancia se necessario
         
         Args:
             position: Dati della posizione
             target_leverage: Leva target del bot
             api_keys: API keys dell'utente
+            
+        Returns:
+            True se il balancing è completato con successo o non necessario, False altrimenti
         """
         try:
             exchange_name = position["exchange"]
@@ -188,7 +271,7 @@ class Balancer:
             
             if not exchange_position:
                 logger.warning(f"Impossibile recuperare posizione da {exchange_name}")
-                return
+                return False
             
             # Calcola la leva effettiva
             effective_leverage = None
@@ -201,7 +284,7 @@ class Balancer:
             
             if effective_leverage is None:
                 logger.warning(f"Impossibile calcolare leva effettiva per posizione {position_id}")
-                return
+                return False
             
             logger.info(f"Leva effettiva: {effective_leverage:.2f}X, Leva target: {target_leverage:.2f}X")
             
@@ -216,7 +299,7 @@ class Balancer:
                 
                 if margin_diff is None:
                     logger.warning(f"Impossibile calcolare aggiustamento margine per posizione {position_id}")
-                    return
+                    return False
                 
                 # Esegui il ribilanciamento
                 if exchange_name.lower() == "bitfinex":
@@ -225,17 +308,21 @@ class Balancer:
                     success = self.adjust_bitmex_margin(exchange_position, margin_diff, api_keys, symbol)
                 else:
                     logger.warning(f"Exchange {exchange_name} non supportato per ribilanciamento")
-                    return
+                    return False
                 
                 if success:
                     logger.info(f"Ribilanciamento completato con successo per posizione {position_id}")
+                    return True
                 else:
                     logger.warning(f"Ribilanciamento fallito per posizione {position_id}")
+                    return False
             else:
                 logger.info(f"Leva già entro i parametri desiderati (diff: {leverage_diff:.2f}X)")
+                return True  # Nessun ribilanciamento necessario = successo
             
         except Exception as e:
             logger.error(f"Errore nell'analisi e ribilanciamento della posizione: {e}")
+            return False
     
     def get_bitfinex_position(self, exchange_manager) -> Optional[Dict]:
         """Recupera la posizione aperta su Bitfinex
@@ -795,6 +882,233 @@ class Balancer:
         except Exception as e:
             logger.error(f"Errore chiamata API BitMEX /position: {e}")
             return None
+
+    def consolidate_bitfinex_wallets(self, user_id: str, api_keys: Dict) -> bool:
+        """Consolida tutti i fondi Bitfinex nel wallet derivatives (USTF0)
+        
+        Trasferisce tutti i fondi USDT/UST disponibili dai wallet exchange e margin
+        al wallet derivatives per garantire che siano disponibili per il rebalancing.
+        
+        Args:
+            user_id: ID dell'utente
+            api_keys: Chiavi API dell'utente
+            
+        Returns:
+            bool: True se il consolidamento è riuscito o non necessario, False se fallito
+        """
+        try:
+            logger.info(f"Inizio consolidamento wallet Bitfinex per utente {user_id}")
+            
+            # Inizializza exchange Bitfinex
+            api_key = api_keys.get("bitfinex_api_key")
+            api_secret = api_keys.get("bitfinex_api_secret")
+            
+            if not api_key or not api_secret:
+                logger.warning(f"API keys Bitfinex mancanti per utente {user_id}")
+                return True  # Non bloccare se non ci sono API keys
+            
+            success = exchange_manager.initialize_exchange("bitfinex", api_key, api_secret)
+            if not success:
+                logger.error(f"Impossibile inizializzare exchange Bitfinex per utente {user_id}")
+                return False
+            
+            # Recupera saldi dettagliati di tutti i wallet
+            wallet_balances = self._get_bitfinex_wallet_balances()
+            if not wallet_balances:
+                logger.warning("Impossibile recuperare saldi wallet Bitfinex")
+                return False
+            
+            logger.info(f"Saldi wallet Bitfinex: {wallet_balances}")
+            
+            # Identifica fondi disponibili per il consolidamento
+            consolidation_transfers = []
+            
+            # Controlla wallet exchange (UST)
+            exchange_ust = wallet_balances.get('exchange', {}).get('UST', 0)
+            if exchange_ust > 0:
+                consolidation_transfers.append({
+                    'amount': exchange_ust,
+                    'from_wallet': 'exchange',
+                    'to_wallet': 'margin',
+                    'currency_from': 'UST',
+                    'currency_to': 'USTF0'
+                })
+            
+            # Controlla wallet margin (UST) - se presente
+            margin_ust = wallet_balances.get('margin', {}).get('UST', 0)
+            if margin_ust > 0:
+                consolidation_transfers.append({
+                    'amount': margin_ust,
+                    'from_wallet': 'margin',
+                    'to_wallet': 'margin',
+                    'currency_from': 'UST',
+                    'currency_to': 'USTF0'
+                })
+            
+            # Esegui i trasferimenti
+            if not consolidation_transfers:
+                logger.info("Nessun trasferimento necessario - fondi già consolidati")
+                return True
+            
+            success_count = 0
+            for transfer in consolidation_transfers:
+                try:
+                    logger.info(f"Trasferimento: {transfer['amount']:.2f} {transfer['currency_from']} "
+                              f"da {transfer['from_wallet']} a {transfer['to_wallet']}")
+                    
+                    result = self._execute_bitfinex_internal_transfer(
+                        transfer['amount'],
+                        transfer['from_wallet'],
+                        transfer['to_wallet'],
+                        transfer['currency_from'],
+                        transfer['currency_to']
+                    )
+                    
+                    if result:
+                        success_count += 1
+                        logger.info(f"Trasferimento completato: {transfer['amount']:.2f} {transfer['currency_from']}")
+                    else:
+                        logger.warning(f"Trasferimento fallito: {transfer['amount']:.2f} {transfer['currency_from']}")
+                        
+                except Exception as e:
+                    logger.error(f"Errore durante trasferimento: {e}")
+            
+            # Considera il consolidamento riuscito se almeno un trasferimento è andato a buon fine
+            # o se non c'erano trasferimenti da fare
+            if success_count > 0 or len(consolidation_transfers) == 0:
+                logger.info(f"Consolidamento completato: {success_count}/{len(consolidation_transfers)} trasferimenti riusciti")
+                return True
+            else:
+                logger.warning("Consolidamento fallito: nessun trasferimento riuscito")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Errore durante consolidamento wallet Bitfinex: {e}")
+            return False
+
+    def _get_bitfinex_wallet_balances(self) -> Dict:
+        """Recupera i saldi dettagliati di tutti i wallet Bitfinex
+        
+        Returns:
+            Dict: Saldi organizzati per wallet e valuta
+        """
+        try:
+            exchange = exchange_manager.exchanges.get('bitfinex')
+            if not exchange:
+                logger.error("Exchange Bitfinex non inizializzato")
+                return {}
+            
+            # Usa l'API balance per ottenere tutti i saldi
+            balance_response = exchange.fetch_balance()
+            
+            wallet_balances = {
+                'exchange': {},
+                'margin': {},
+                'funding': {}
+            }
+            
+            # Processa la risposta dell'API
+            if hasattr(balance_response, 'get') and 'info' in balance_response:
+                balance_data = balance_response['info']
+                
+                if isinstance(balance_data, list):
+                    for balance_entry in balance_data:
+                        if isinstance(balance_entry, list) and len(balance_entry) >= 5:
+                            wallet_type = balance_entry[0]  # exchange, margin, funding
+                            currency = balance_entry[1]     # UST, USTF0, etc.
+                            available = float(balance_entry[4]) if balance_entry[4] else 0
+                            
+                            if wallet_type in wallet_balances and available > 0:
+                                wallet_balances[wallet_type][currency] = available
+            
+            return wallet_balances
+            
+        except Exception as e:
+            logger.error(f"Errore recupero saldi wallet Bitfinex: {e}")
+            return {}
+
+    def _execute_bitfinex_internal_transfer(self, amount: float, from_wallet: str, to_wallet: str, 
+                                          currency_from: str = None, currency_to: str = None) -> bool:
+        """Esegue un trasferimento interno tra wallet Bitfinex
+        
+        Args:
+            amount: Importo da trasferire
+            from_wallet: Wallet di origine (exchange, margin, funding)
+            to_wallet: Wallet di destinazione (exchange, margin, funding)
+            currency_from: Valuta di origine (opzionale, default basato su wallet)
+            currency_to: Valuta di destinazione (opzionale, default basato su wallet)
+            
+        Returns:
+            bool: True se il trasferimento è riuscito
+        """
+        try:
+            exchange = exchange_manager.exchanges.get('bitfinex')
+            if not exchange:
+                logger.error("Exchange Bitfinex non inizializzato")
+                return False
+            
+            # Determina le valute se non specificate
+            if not currency_from:
+                currency_from = "USTF0" if from_wallet == "margin" else "UST"
+            if not currency_to:
+                currency_to = "USTF0" if to_wallet == "margin" else "UST"
+            
+            params = {
+                "from": from_wallet,
+                "to": to_wallet,
+                "currency": currency_from,
+                "amount": str(amount)
+            }
+            
+            # Aggiungi currency_to se diversa da currency_from (conversione)
+            if currency_from != currency_to:
+                params["currency_to"] = currency_to
+                logger.info(f"Conversione valuta: {currency_from} -> {currency_to}")
+            
+            logger.debug(f"Parametri trasferimento Bitfinex: {params}")
+            
+            # Esegui il trasferimento
+            if hasattr(exchange, 'privatePostAuthWTransfer'):
+                result = exchange.privatePostAuthWTransfer(params)
+                
+                if result and isinstance(result, list) and len(result) > 0:
+                    status = result[6] if len(result) > 6 else "UNKNOWN"
+                    
+                    if status == "SUCCESS":
+                        logger.info(f"Trasferimento Bitfinex riuscito: {amount} {currency_from}")
+                        return True
+                    else:
+                        logger.error(f"Trasferimento Bitfinex fallito: status={status}")
+                        return False
+                else:
+                    logger.error(f"Risposta API trasferimento non valida: {result}")
+                    return False
+            else:
+                logger.error("Metodo privatePostAuthWTransfer non disponibile")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Errore esecuzione trasferimento Bitfinex: {e}")
+            return False
+
+    def update_bot_status_to_running(self, bot_id: str, processed_positions: int):
+        """Aggiorna lo stato del bot da TRANSFERING a RUNNING dopo un balancing riuscito
+        
+        Args:
+            bot_id: ID del bot da aggiornare
+            processed_positions: Numero di posizioni processate con successo
+        """
+        try:
+            # Aggiorna lo stato del bot nel database
+            update_result = bot_manager.update_bot_status(bot_id, BOT_STATUS.RUNNING)
+            
+            if update_result:
+                logger.info(f"✅ Bot {bot_id} aggiornato da TRANSFERING a RUNNING - {processed_positions} posizioni bilanciate con successo")
+            else:
+                logger.error(f"❌ Errore nell'aggiornamento dello stato del bot {bot_id} a RUNNING")
+                
+        except Exception as e:
+            logger.error(f"Errore nell'aggiornamento stato bot {bot_id}: {e}")
 
 
 def main():

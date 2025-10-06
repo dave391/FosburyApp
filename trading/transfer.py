@@ -50,7 +50,7 @@ class TransferManager:
                     logger.error(error_msg)
                     errors.append(error_msg)
             
-            # CICLO 2: Processa trasferimenti esterni (EXTERNAL_TRANSFER_PENDING -> RUNNING)
+            # CICLO 2: Processa trasferimenti esterni (EXTERNAL_TRANSFER_PENDING -> TRANSFERING)
             for bot in external_transfer_bots:
                 try:
                     result = self._process_external_transfer(bot)
@@ -98,22 +98,6 @@ class TransferManager:
             if not balances:
                 return {"success": False, "error": "Errore recupero bilanci"}
             
-            # Verifica se il capitale totale è sufficiente (incluse commissioni)
-            # Salta questo controllo per rebalancing
-            stopped_type = bot.get('stopped_type')
-            if stopped_type != "rebalance":
-                total_balance = sum(balances.values())
-                required_capital = capital + 1.0  # Capital + 1 USDT per commissioni
-                
-                if total_balance < required_capital:
-                    logger.warning(f"Bot {bot['_id']}: capitale insufficiente. Totale: {total_balance}, Richiesto: {required_capital}")
-                    bot_manager.update_bot_status(
-                        str(bot['_id']), 
-                        BOT_STATUS['STOPPED'], 
-                        stopped_type="not_enough_capital"
-                    )
-                    return {"success": False, "error": f"Capitale insufficiente: {total_balance} < {required_capital}"}
-            
             # Calcola trasferimento necessario
             transfer_info = self._calculate_transfer_amount(
                 balances, 
@@ -121,7 +105,7 @@ class TransferManager:
                 exchange_long, 
                 exchange_short, 
                 bot.get('stop_loss_percentage', 20),
-                bot.get('stopped_type'),
+                bot.get('transfer_reason'),
                 bot
             )
             
@@ -137,11 +121,14 @@ class TransferManager:
             
             if transfer_info["amount"] == 0:
                 logger.info(f"Bot {bot['_id']}: bilanci già equilibrati")
-                # Passa direttamente a RUNNING se non serve trasferimento
+                # Aggiorna a TRANSFERING anche se non serve trasferimento per mantenere coerenza
+                # Altri moduli gestiranno il passaggio a RUNNING
+                transfer_reason = bot.get('transfer_reason', 'unknown')
                 bot_manager.update_bot_status(
                     str(bot['_id']), 
-                    BOT_STATUS['RUNNING'], 
-                    started_type="restarted"
+                    BOT_STATUS['TRANSFERING'], 
+                    started_type="restarted",
+                    transfer_reason=transfer_reason
                 )
                 return {"success": True, "message": "Bilanci già equilibrati"}
             
@@ -191,7 +178,7 @@ class TransferManager:
             return {"success": False, "error": str(e)}
     
     def _process_external_transfer(self, bot: Dict) -> Dict:
-        """CICLO 2: Processa trasferimento esterno (EXTERNAL_TRANSFER_PENDING -> RUNNING)"""
+        """CICLO 2: Processa trasferimento esterno (EXTERNAL_TRANSFER_PENDING -> TRANSFERING)"""
         try:
             user_id = bot['user_id']
             exchange_long = bot['exchange_long']
@@ -277,22 +264,6 @@ class TransferManager:
             if not balances:
                 return {"success": False, "error": "Errore recupero bilanci"}
             
-            # Verifica se il capitale totale è sufficiente (incluse commissioni)
-            # Salta questo controllo per rebalancing
-            stopped_type = bot.get('stopped_type')
-            if stopped_type != "rebalance":
-                total_balance = sum(balances.values())
-                required_capital = capital + 1.0  # Capital + 1 USDT per commissioni
-                
-                if total_balance < required_capital:
-                    logger.warning(f"Bot {bot['_id']}: capitale insufficiente. Totale: {total_balance}, Richiesto: {required_capital}")
-                    bot_manager.update_bot_status(
-                        str(bot['_id']), 
-                        BOT_STATUS['STOPPED'], 
-                        stopped_type="not_enough_capital"
-                    )
-                    return {"success": False, "error": f"Capitale insufficiente: {total_balance} < {required_capital}"}
-            
             # Calcola trasferimento necessario
             transfer_info = self._calculate_transfer_amount(
                 balances, 
@@ -300,7 +271,7 @@ class TransferManager:
                 exchange_long, 
                 exchange_short, 
                 bot.get('stop_loss_percentage', 20),
-                bot.get('stopped_type'),
+                bot.get('transfer_reason'),
                 bot
             )
             
@@ -511,11 +482,11 @@ class TransferManager:
             logger.error(f"Errore recupero bilanci: {e}")
             return None
     
-    def _calculate_transfer_amount(self, balances: Dict, capital: float, exchange_long: str, exchange_short: str, stop_loss_percentage: float, stopped_type: str = None, bot: Dict = None) -> Dict:
+    def _calculate_transfer_amount(self, balances: Dict, capital: float, exchange_long: str, exchange_short: str, stop_loss_percentage: float, transfer_reason: str = None, bot: Dict = None) -> Dict:
         """Calcola importo da trasferire per riequilibrare i fondi con logica a tre livelli"""
         try:
             # Gestione speciale per rebalancing di posizioni aperte
-            if stopped_type == "rebalance" and bot:
+            if transfer_reason == "rebalance" and bot:
                 logger.info("Modalità rebalance: calcolo trasferimento basato su margini richiesti delle posizioni")
                 return self._calculate_rebalance_transfer(bot, balances, exchange_long, exchange_short)
             # Calcola available_balance (somma dei bilanci attuali)

@@ -319,7 +319,7 @@ class PriceMonitor:
             
             # Se trigger attivato, richiedi trasferimento per rebalancing
             if trigger_activated:
-                bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "rebalance", "rebalance")
+                bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], transfer_reason="rebalance")
                 
         except Exception as e:
             # Ignora errori per MVP come richiesto
