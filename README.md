@@ -21,8 +21,8 @@ pip install -r requirements.txt
    - Crea file `.env` nella root del progetto
    - Inserisci le seguenti variabili:
 ```env
-DB_PASSWORD=JUIgRKrwJPyoRfq6
-ENCRYPTION_KEY=TradingAppSecureKey2024ForFund!
+DB_PASSWORD=your_database_password_here
+ENCRYPTION_KEY=your_encryption_key_here
 ENVIRONMENT=production
 DEBUG=false
 ```
