@@ -240,9 +240,8 @@ class PriceMonitor:
             
             user_id = bot["user_id"]
             
-            # Recupera posizioni aperte per questo bot
-            bot_positions = position_manager.get_bot_positions(bot["_id"])
-            open_positions = [p for p in bot_positions if p["status"] == "open"]
+            # Recupera posizioni aperte per questo bot (ottimizzato)
+            open_positions = position_manager.get_bot_open_positions(bot["_id"])
             
             if not open_positions:
                 return
@@ -290,9 +289,8 @@ class PriceMonitor:
             
             user_id = bot["user_id"]
             
-            # Recupera posizioni aperte per questo bot
-            bot_positions = position_manager.get_bot_positions(bot["_id"])
-            open_positions = [p for p in bot_positions if p["status"] == "open"]
+            # Recupera posizioni aperte per questo bot (ottimizzato)
+            open_positions = position_manager.get_bot_open_positions(bot["_id"])
             
             if not open_positions:
                 return

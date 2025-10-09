@@ -290,12 +290,11 @@ class BotManager:
             update_data = {"status": status}
             
             if status == BOT_STATUS["RUNNING"]:
-                # Bot avviato - imposta started_at
+                # Bot avviato - imposta started_at e resetta transfer_reason
                 update_data["started_at"] = datetime.utcnow()
                 update_data["stopped_at"] = None
                 update_data["stopped_type"] = None
-                if transfer_reason:
-                    update_data["transfer_reason"] = transfer_reason
+                update_data["transfer_reason"] = None  # Sempre null quando diventa RUNNING
                 
             elif status == BOT_STATUS["STOPPED"]:
                 # Bot fermato - imposta stopped_at e tipo
@@ -520,6 +519,32 @@ class PositionManager:
             
         except Exception as e:
             logger.error(f"Errore recupero posizioni bot: {e}")
+            return []
+    
+    def get_bot_open_positions(self, bot_id):
+        """
+        Recupera solo le posizioni aperte di un bot specifico - OTTIMIZZATO
+        
+        Questo metodo è ottimizzato per recuperare direttamente dal database
+        solo le posizioni con status "open", evitando il filtro in memoria.
+        
+        Args:
+            bot_id: ID del bot
+            
+        Returns:
+            list: Lista delle posizioni aperte del bot
+        """
+        try:
+            positions = list(self.positions.find({
+                "bot_id": bot_id,
+                "status": "open"
+            }))
+            
+            logger.info(f"Trovate {len(positions)} posizioni aperte per bot {bot_id}")
+            return positions
+            
+        except Exception as e:
+            logger.error(f"Errore recupero posizioni aperte bot: {e}")
             return []
     
     def update_position_status(self, position_id, status, close_data=None):

@@ -113,7 +113,7 @@ class TransferManager:
             if transfer_info.get("stop_loss_triggered", False):
                 logger.warning(f"Bot {bot['_id']}: Stop loss attivato! Fermo il bot.")
                 bot_manager.update_bot_status(
-                    str(bot['_id']), 
+                    bot['user_id'], 
                     BOT_STATUS['STOPPED'], 
                     stopped_type="stop_loss"
                 )
@@ -125,7 +125,7 @@ class TransferManager:
                 # Altri moduli gestiranno il passaggio a RUNNING
                 transfer_reason = bot.get('transfer_reason', 'unknown')
                 bot_manager.update_bot_status(
-                    str(bot['_id']), 
+                    bot['user_id'], 
                     BOT_STATUS['TRANSFERING'], 
                     started_type="restarted",
                     transfer_reason=transfer_reason
@@ -144,7 +144,7 @@ class TransferManager:
                     logger.error(f"Bot {bot['_id']}: trasferimento interno fallito")
                     # Riporta il bot a TRANSFER_REQUESTED per riprovare
                     bot_manager.update_bot_status(
-                        str(bot['_id']), 
+                        bot['user_id'], 
                         BOT_STATUS['TRANSFER_REQUESTED'], 
                         transfer_reason=bot.get('transfer_reason', 'unknown')
                     )
@@ -153,7 +153,7 @@ class TransferManager:
                 # Trasferimento interno riuscito - passa a EXTERNAL_TRANSFER_PENDING
                 transfer_reason = bot.get('transfer_reason', 'unknown')
                 bot_manager.update_bot_status(
-                    str(bot['_id']), 
+                    bot['user_id'], 
                     BOT_STATUS['EXTERNAL_TRANSFER_PENDING'], 
                     transfer_reason=transfer_reason,
                     transfer_amount=transfer_info["amount"]
@@ -165,7 +165,7 @@ class TransferManager:
                 # BitMEX non ha trasferimenti interni - passa direttamente a EXTERNAL_TRANSFER_PENDING
                 transfer_reason = bot.get('transfer_reason', 'unknown')
                 bot_manager.update_bot_status(
-                    str(bot['_id']), 
+                    bot['user_id'], 
                     BOT_STATUS['EXTERNAL_TRANSFER_PENDING'], 
                     transfer_reason=transfer_reason,
                     transfer_amount=transfer_info["amount"]
@@ -224,7 +224,7 @@ class TransferManager:
                 # Trasferimento esterno riuscito - passa a TRANSFERING
                 transfer_reason = bot.get('transfer_reason', 'unknown')
                 bot_manager.update_bot_status(
-                    str(bot['_id']), 
+                    bot['user_id'], 
                     BOT_STATUS['TRANSFERING'], 
                     transfer_reason=transfer_reason,
                     transfer_amount=None  # Reset transfer_amount
@@ -279,7 +279,7 @@ class TransferManager:
             if transfer_info.get("stop_loss_triggered", False):
                 logger.warning(f"Bot {bot['_id']}: Stop loss attivato! Fermo il bot.")
                 bot_manager.update_bot_status(
-                    str(bot['_id']), 
+                    bot['user_id'], 
                     BOT_STATUS['STOPPED'], 
                     stopped_type="stop_loss"
                 )
@@ -293,7 +293,7 @@ class TransferManager:
             # Mantiene il transfer_reason dal precedente stato TRANSFER_REQUESTED
             transfer_reason = bot.get('transfer_reason', 'unknown')
             bot_manager.update_bot_status(
-                str(bot['_id']), 
+                bot['user_id'], 
                 BOT_STATUS['TRANSFERING'], 
                 started_type="restarted",
                 transfer_reason=transfer_reason
@@ -823,14 +823,9 @@ class TransferManager:
                 logger.warning("Nessuna posizione aperta trovata per il rebalancing")
                 return {"amount": 0, "from_exchange": None, "to_exchange": None}
             
-            # Inizializza exchange per calcoli
-            exchanges = self._initialize_exchanges(
-                bot.get("user_id"), 
-                bot.get("exchange_long"), 
-                bot.get("exchange_short")
-            )
-            if not exchanges:
-                logger.error("Impossibile inizializzare exchange per rebalancing")
+            # Verifica che gli exchange siano già inizializzati
+            if "bitfinex" not in self.exchange_manager.exchanges or "bitmex" not in self.exchange_manager.exchanges:
+                logger.error("Exchange non inizializzati per rebalancing")
                 return {"amount": 0, "from_exchange": None, "to_exchange": None}
             
             # Calcola margini richiesti per ogni posizione
@@ -841,12 +836,12 @@ class TransferManager:
             
             if bitfinex_position:
                 bitfinex_margin_needed = self._calculate_margin_adjustment(
-                    bitfinex_position, target_leverage, "bitfinex", bot, exchanges["bitfinex"]
+                    bitfinex_position, target_leverage, "bitfinex", bot, self.exchange_manager.exchanges["bitfinex"]
                 )
                 
             if bitmex_position:
                 bitmex_margin_needed = self._calculate_margin_adjustment(
-                    bitmex_position, target_leverage, "bitmex", bot, exchanges["bitmex"]
+                    bitmex_position, target_leverage, "bitmex", bot, self.exchange_manager.exchanges["bitmex"]
                 )
             
             logger.info(f"Margini necessari - Bitfinex: {bitfinex_margin_needed:.2f}, BitMEX: {bitmex_margin_needed:.2f}")

@@ -41,21 +41,25 @@ class TradingOpener:
             try:
                 bot_status = bot.get('status')
                 if bot_status == BOT_STATUS["TRANSFERING"]:
-                    # Processa solo bot TRANSFERING con transfer_reason 'emergency_close'
+                    # Processa solo bot TRANSFERING con transfer_reason 'emergency_close' o 'first_start'
                     transfer_reason = bot.get('transfer_reason')
-                    if transfer_reason != 'emergency_close':
+                    if transfer_reason not in ['emergency_close', 'first_start']:
                         logger.info(f"Bot TRANSFERING utente {bot['user_id']} saltato (reason: {transfer_reason})")
                         continue
-                    logger.info(f"Processando bot TRANSFERING utente: {bot['user_id']} (emergency_close)")
+                    logger.info(f"Processando bot TRANSFERING utente: {bot['user_id']} (reason: {transfer_reason})")
                 else:
                     logger.info(f"Processando bot READY utente: {bot['user_id']}")
                     
                 result = self.execute_trading_strategy(bot)
                 
                 if result == "success":
-                    # Aggiorna status a running con timestamp started_at e transfer_reason a waiting
-                    bot_manager.update_bot_status(bot['user_id'], BOT_STATUS["RUNNING"], transfer_reason="waiting")
-                    logger.info(f"Bot {bot['user_id']} avviato con successo")
+                    # Controlla se transfer_reason è "first_start" o "emergency_close" per impostarlo a "null"
+                    current_transfer_reason = bot.get('transfer_reason')
+                    new_transfer_reason = "null" if current_transfer_reason in ["first_start", "emergency_close"] else "waiting"
+                    
+                    # Aggiorna status a running con timestamp started_at e transfer_reason appropriato
+                    bot_manager.update_bot_status(bot['user_id'], BOT_STATUS["RUNNING"], transfer_reason=new_transfer_reason)
+                    logger.info(f"Bot {bot['user_id']} avviato con successo (transfer_reason: {current_transfer_reason} -> {new_transfer_reason})")
                 elif result == "insufficient_capital":
                     # Capitale totale insufficiente - bot già fermato da _handle_balance_failure
                     logger.warning(f"Bot {bot['user_id']}: capitale totale insufficiente")
@@ -68,6 +72,9 @@ class TradingOpener:
                 elif result == "transfer_in_progress":
                     # Bot TRANSFERING con capitale mal distribuito - mantiene stato
                     logger.info(f"Bot {bot['user_id']}: capitale mal distribuito, mantengo TRANSFERING")
+                elif result == "stop_loss_triggered":
+                    # Bot TRANSFERING fermato per stop loss - già gestito in execute_trading_strategy
+                    logger.warning(f"Bot {bot['user_id']}: fermato per stop loss")
                 else:
                     # Altri errori - ferma il bot solo se non è TRANSFERING
                     if bot_status != BOT_STATUS["TRANSFERING"]:
@@ -90,8 +97,10 @@ class TradingOpener:
             exchange_short = bot_config['exchange_short']
             capital = bot_config['capital']
             leverage = bot_config['leverage']
+            bot_status = bot_config.get('status')
+            stop_loss_percentage = bot_config.get('stop_loss_percentage', 20)  # Default 20% se non specificato
             
-            logger.info(f"Configurazione bot: Long={exchange_long}, Short={exchange_short}, Capital={capital}, Leverage={leverage}")
+            logger.info(f"Configurazione bot: Long={exchange_long}, Short={exchange_short}, Capital={capital}, Leverage={leverage}, Status={bot_status}")
             
             # Recupera API keys utente
             api_keys = user_manager.get_user_api_keys(user_id)
@@ -112,6 +121,19 @@ class TradingOpener:
             
             logger.info(f"Capitale configurato: {capital} USDT")
             logger.info(f"Available balance: {available_balance} USDT")
+            logger.info(f"Stop loss percentage: {stop_loss_percentage}%")
+            
+            # CONTROLLO SPECIFICO PER BOT TRANSFERING: Verifica stop loss
+            if bot_status == BOT_STATUS["TRANSFERING"]:
+                stop_loss_threshold = capital - (capital * stop_loss_percentage / 100)
+                logger.info(f"Bot TRANSFERING - Controllo stop loss: available_balance ({available_balance}) vs threshold ({stop_loss_threshold})")
+                
+                if available_balance <= stop_loss_threshold:
+                    logger.warning(f"Bot TRANSFERING {user_id}: Stop loss attivato! Available balance {available_balance} <= threshold {stop_loss_threshold}")
+                    bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "stop_loss")
+                    return "stop_loss_triggered"
+                else:
+                    logger.info(f"Bot TRANSFERING {user_id}: Stop loss OK, procedo con available_balance")
             
             # Determina quale valore usare per il position sizing
             if available_balance < capital:
@@ -127,8 +149,24 @@ class TradingOpener:
             capital_per_exchange_sizing = base_amount_for_sizing / 2
             capital_with_leverage = capital_per_exchange_sizing * leverage  # Applica leva per calcolo size
             
-            # Per il controllo dei requisiti, usa sempre capital configurato
-            capital_per_exchange_check = capital / 2
+            # Per il controllo dei requisiti, determina il valore in base allo status del bot
+            if bot_status == BOT_STATUS["READY"]:
+                # Bot READY: Applica tolleranza del 2% sul capitale configurato
+                tolerance_percentage = 2.0  # 2% di tolleranza
+                min_capital_with_tolerance = capital * (1 - tolerance_percentage / 100)
+                
+                if available_balance >= min_capital_with_tolerance:
+                    # Se available_balance è almeno il 98% del capitale, usa available_balance per il controllo
+                    capital_per_exchange_check = available_balance / 2
+                    logger.info(f"Bot READY: Tolleranza 2% applicata. Usando available_balance per controllo: {capital_per_exchange_check} USDT per exchange")
+                else:
+                    # Se available_balance è sotto il 98%, usa capital configurato (fallirà il controllo)
+                    capital_per_exchange_check = capital / 2
+                    logger.info(f"Bot READY: Available balance sotto tolleranza 2%. Usando capital configurato: {capital_per_exchange_check} USDT per exchange")
+            else:
+                # Bot TRANSFERING: Usa sempre available_balance per il controllo (già passato il controllo stop loss)
+                capital_per_exchange_check = available_balance / 2
+                logger.info(f"Bot TRANSFERING: Usando available_balance per controllo: {capital_per_exchange_check} USDT per exchange")
             
             logger.info(f"Controllo capitale richiesto per exchange: {capital_per_exchange_check} USDT")
             logger.info(f"Capitale per sizing per exchange: {capital_per_exchange_sizing} USDT")
@@ -470,7 +508,7 @@ class TradingOpener:
                 else:
                     # Se è READY, richiedi trasferimento tra exchange
                     logger.info(f"Bot {user_id}: richiesto trasferimento tra exchange per redistribuzione")
-                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "first_start")
+                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], transfer_reason="first_start")
                     return "transfer_requested"
             
             # Se arriviamo qui, significa che check_capital_requirements ha già gestito

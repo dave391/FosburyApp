@@ -233,11 +233,11 @@ class Balancer:
             
             # Gestisci aggiornamento stato in base al risultato delle operazioni
             current_status = bot.get("status")
-            if current_status == BOT_STATUS.TRANSFERING and all_positions_success and processed_positions > 0:
-                self.update_bot_status_to_running(bot_id, processed_positions)
-            elif current_status == BOT_STATUS.TRANSFERING and not all_positions_success:
+            if current_status == BOT_STATUS["TRANSFERING"] and all_positions_success and processed_positions > 0:
+                self.update_bot_status_to_running(user_id, bot_id, processed_positions)
+            elif current_status == BOT_STATUS["TRANSFERING"] and not all_positions_success:
                 logger.info(f"Bot {bot_id} rimane in stato TRANSFERING - alcune operazioni di balancing non sono riuscite")
-            elif current_status == BOT_STATUS.RUNNING and all_positions_success and processed_positions > 0:
+            elif current_status == BOT_STATUS["RUNNING"] and all_positions_success and processed_positions > 0:
                 logger.info(f"✅ Bot {bot_id} processato con successo - {processed_positions} posizioni bilanciate (stato: RUNNING)")
             
         except Exception as e:
@@ -1091,16 +1091,17 @@ class Balancer:
             logger.error(f"Errore esecuzione trasferimento Bitfinex: {e}")
             return False
 
-    def update_bot_status_to_running(self, bot_id: str, processed_positions: int):
+    def update_bot_status_to_running(self, user_id: str, bot_id: str, processed_positions: int):
         """Aggiorna lo stato del bot da TRANSFERING a RUNNING dopo un balancing riuscito
         
         Args:
+            user_id: ID dell'utente proprietario del bot
             bot_id: ID del bot da aggiornare
             processed_positions: Numero di posizioni processate con successo
         """
         try:
             # Aggiorna lo stato del bot nel database
-            update_result = bot_manager.update_bot_status(bot_id, BOT_STATUS.RUNNING)
+            update_result = bot_manager.update_bot_status(user_id, BOT_STATUS["RUNNING"])
             
             if update_result:
                 logger.info(f"✅ Bot {bot_id} aggiornato da TRANSFERING a RUNNING - {processed_positions} posizioni bilanciate con successo")
