@@ -1,5 +1,5 @@
 """Modulo Transfer - Gestione trasferimenti automatici tra exchange
-Gestisce il riequilibrio dei fondi USDT tra Bitmex e Bitfinex
+Gestisce il riequilibrio dei fondi USDT tra Bitmex e Bitfinex e altri futuri exchange.
 """
 
 import logging
