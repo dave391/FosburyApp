@@ -483,10 +483,10 @@ class TransferManager:
             return None
     
     def _calculate_transfer_amount(self, balances: Dict, capital: float, exchange_long: str, exchange_short: str, stop_loss_percentage: float, transfer_reason: str = None, bot: Dict = None) -> Dict:
-        """Calcola importo da trasferire per riequilibrare i fondi con logica a tre livelli"""
+        """Calcola importo da trasferire per riequilibrare i fondi"""
         try:
-            # Gestione speciale per rebalancing di posizioni aperte
-            if transfer_reason == "rebalance" and bot:
+            # Gestione speciale per rebalancing di posizioni aperte (mantieni solo per transfer_reason='balancer')
+            if transfer_reason == "balancer" and bot:
                 logger.info("Modalità rebalance: calcolo trasferimento basato su margini richiesti delle posizioni")
                 return self._calculate_rebalance_transfer(bot, balances, exchange_long, exchange_short)
             # Calcola available_balance (somma dei bilanci attuali)
@@ -1187,6 +1187,8 @@ class TransferManager:
         except Exception as e:
             logger.error(f"Errore recupero margine removibile BitMEX: {e}")
             return None
+
+
 
 # Istanza globale
 transfer_manager = TransferManager()

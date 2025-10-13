@@ -213,8 +213,6 @@ def show_bot_control_section(current_bot, user_id):
         st.subheader("Controllo APP")
         
         with st.form("stop_bot_form"):
-            st.warning("⚠️ Fermando l'APP, tutte le posizioni aperte verranno chiuse.")
-            
             stop_app = st.form_submit_button("STOP APP", use_container_width=True)
             
             if stop_app:

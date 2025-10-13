@@ -166,7 +166,7 @@ class Closer:
                 if stopped_type == "safety":
                     # Safety trigger: imposta stato per transfer requested
                     logger.info(f"Safety trigger attivato - impostazione stato TRANSFER_REQUESTED")
-                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "safety")
+                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "emergency_close")
                 else:
                     # Stop manuale o altri motivi: imposta stato STOPPED
                     logger.info(f"Stop {stopped_type} - impostazione stato STOPPED")
@@ -177,7 +177,7 @@ class Closer:
             # Mantieni la distinzione anche in caso di errore
             stopped_type = bot.get("stopped_type", "manual")
             if stopped_type == "safety":
-                bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "error")
+                bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "emergency_close")
             else:
                 bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "error")
     

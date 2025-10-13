@@ -69,7 +69,7 @@ def load_dashboard_data():
     if not current_bot:
         return None, None, "Nessun bot configurato per questo utente"
     
-    # Verifica lo status del bot
+    # Verifica lo status del bot - escludi solo "stopped" e "ready"
     bot_status = current_bot.get("status")
     if bot_status == "stopped":
         return None, None, "Nessun bot attivo al momento"
@@ -87,9 +87,9 @@ def load_dashboard_data():
         return None, None, "Email utente non trovata"
     
     # Recupera dati di funding e fee di trading
-    # Passa bot_started_at per ottimizzare il recupero dati
-    bot_started_at = current_bot.get('started_at')
-    funding_events, trading_fees, error = get_all_funding_data(target_email, bot_started_at)
+    # Usa created_at come data di riferimento invece di started_at
+    bot_created_at = current_bot.get('created_at')
+    funding_events, trading_fees, error = get_all_funding_data(target_email, bot_created_at)
     
     return funding_events, trading_fees, current_bot, error
 
@@ -202,10 +202,10 @@ def main():
                 st.warning("Nessun dato di funding trovato")
                 return
             
-            # Recupera la data di avvio dal bot
-            start_date = current_bot.get('started_at')
+            # Recupera la data di creazione dal bot
+            start_date = current_bot.get('created_at')
             if not start_date:
-                st.error("Data di avvio del bot non trovata")
+                st.error("Data di creazione del bot non trovata")
                 return
             
             # Calcola il capitale iniziale effettivo dalle posizioni
@@ -330,9 +330,9 @@ def main():
             # Mostra statistiche generali
 
             if start_date:
-                st.info(f"**Bot avviato il**: {start_date.strftime('%d/%m/%Y %H:%M:%S')} UTC")
+                st.info(f"**Bot creato il**: {start_date.strftime('%d/%m/%Y %H:%M:%S')} UTC")
             
-            # Filtra le fee dalla data di avvio (stesso filtro usato in calculate_metrics)
+            # Filtra le fee dalla data di creazione (stesso filtro usato in calculate_metrics)
             filtered_fees = []
             for fee in trading_fees:
                 if fee['date']:
@@ -346,13 +346,13 @@ def main():
                     if start_date and start_date.tzinfo is not None:
                         comparison_start_date = start_date.replace(tzinfo=None)
                     
-                    # Aggiungi buffer di 5 secondi prima della data di avvio per includere fee
+                    # Aggiungi buffer di 5 secondi prima della data di creazione per includere fee
                     # che potrebbero essere registrate leggermente prima a causa di discrepanze temporali
                     if comparison_start_date:
                         from datetime import timedelta
                         buffer_start_date = comparison_start_date - timedelta(seconds=5)
                         
-                        # Fee valide: da 5 secondi prima dell'avvio in poi
+                        # Fee valide: da 5 secondi prima della creazione in poi
                         if fee_date >= buffer_start_date:
                             filtered_fees.append(fee)
             
@@ -413,7 +413,7 @@ def main():
                     
             else:
                 if start_date:
-                    st.warning(f"Nessuna fee di trading trovata dopo la data di avvio del bot ({start_date.strftime('%d/%m/%Y %H:%M:%S')} UTC)")
+                    st.warning(f"Nessuna fee di trading trovata dopo la data di creazione del bot ({start_date.strftime('%d/%m/%Y %H:%M:%S')} UTC)")
                 else:
                     st.warning("Nessuna fee di trading trovata nel periodo selezionato")
         else:
@@ -427,7 +427,7 @@ def main():
             funding_events = st.session_state.funding_events
             start_date = st.session_state.get('start_date')
             
-            # Filtra funding events dalla data di avvio
+            # Filtra funding events dalla data di creazione
             filtered_funding = []
             for event in funding_events:
                 if event['date']:
@@ -560,7 +560,7 @@ def main():
                     st.warning("Nessun funding event trovato")
                 
             else:
-                st.warning("Nessun funding event trovato dopo la data di avvio del bot")
+                st.warning("Nessun funding event trovato dopo la data di creazione del bot")
         else:
             st.info("Nessun funding event disponibile")
 

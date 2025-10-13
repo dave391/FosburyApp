@@ -135,36 +135,53 @@ class TradingOpener:
                 else:
                     logger.info(f"Bot TRANSFERING {user_id}: Stop loss OK, procedo con available_balance")
             
+            # Determina se applicare logica READY (per bot READY o TRANSFERING con first_start)
+            transfer_reason = bot_config.get('transfer_reason')
+            use_ready_logic = (bot_status == BOT_STATUS["READY"]) or \
+                             (bot_status == BOT_STATUS["TRANSFERING"] and transfer_reason == "first_start")
+            
             # Determina quale valore usare per il position sizing
-            if available_balance < capital:
-                # Usa available_balance per position sizing
-                base_amount_for_sizing = available_balance
-                logger.info(f"Usando available_balance per position sizing: {base_amount_for_sizing} USDT (available_balance < capital)")
+            if use_ready_logic:
+                # Logica READY: usa il minore tra available_balance e capital
+                if available_balance < capital:
+                    base_amount_for_sizing = available_balance
+                    logger.info(f"Usando available_balance per position sizing: {base_amount_for_sizing} USDT (available_balance < capital)")
+                else:
+                    base_amount_for_sizing = capital
+                    logger.info(f"Usando capital per position sizing: {base_amount_for_sizing} USDT (available_balance >= capital)")
             else:
-                # Usa capital per position sizing
-                base_amount_for_sizing = capital
-                logger.info(f"Usando capital per position sizing: {base_amount_for_sizing} USDT (available_balance >= capital)")
+                # Logica TRANSFERING standard: usa sempre il minore tra available_balance e capital
+                if available_balance < capital:
+                    base_amount_for_sizing = available_balance
+                    logger.info(f"Bot TRANSFERING: Usando available_balance per position sizing: {base_amount_for_sizing} USDT")
+                else:
+                    base_amount_for_sizing = capital
+                    logger.info(f"Bot TRANSFERING: Usando capital per position sizing: {base_amount_for_sizing} USDT")
             
             # Calcola capital_per_exchange per position sizing
             capital_per_exchange_sizing = base_amount_for_sizing / 2
             capital_with_leverage = capital_per_exchange_sizing * leverage  # Applica leva per calcolo size
             
-            # Per il controllo dei requisiti, determina il valore in base allo status del bot
+            # Per il controllo dei requisiti, determina il valore in base alla logica specifica
             if bot_status == BOT_STATUS["READY"]:
-                # Bot READY: Applica tolleranza del 2% sul capitale configurato
+                # Logica READY: Applica tolleranza del 2% sul capitale configurato
                 tolerance_percentage = 2.0  # 2% di tolleranza
                 min_capital_with_tolerance = capital * (1 - tolerance_percentage / 100)
                 
                 if available_balance >= min_capital_with_tolerance:
                     # Se available_balance è almeno il 98% del capitale, usa available_balance per il controllo
                     capital_per_exchange_check = available_balance / 2
-                    logger.info(f"Bot READY: Tolleranza 2% applicata. Usando available_balance per controllo: {capital_per_exchange_check} USDT per exchange")
+                    logger.info(f"Logica READY: Tolleranza 2% applicata. Usando available_balance per controllo: {capital_per_exchange_check} USDT per exchange")
                 else:
                     # Se available_balance è sotto il 98%, usa capital configurato (fallirà il controllo)
                     capital_per_exchange_check = capital / 2
-                    logger.info(f"Bot READY: Available balance sotto tolleranza 2%. Usando capital configurato: {capital_per_exchange_check} USDT per exchange")
+                    logger.info(f"Logica READY: Available balance sotto tolleranza 2%. Usando capital configurato: {capital_per_exchange_check} USDT per exchange")
+            elif bot_status == BOT_STATUS["TRANSFERING"] and transfer_reason in ["first_start", "emergency_close"]:
+                # Bot TRANSFERING con first_start o emergency_close: Usa sempre capital configurato per il controllo distribuzione
+                capital_per_exchange_check = capital / 2
+                logger.info(f"Bot TRANSFERING {transfer_reason}: Usando capital configurato per controllo: {capital_per_exchange_check} USDT per exchange")
             else:
-                # Bot TRANSFERING: Usa sempre available_balance per il controllo (già passato il controllo stop loss)
+                # Bot TRANSFERING standard: Usa sempre available_balance per il controllo (già passato il controllo stop loss)
                 capital_per_exchange_check = available_balance / 2
                 logger.info(f"Bot TRANSFERING: Usando available_balance per controllo: {capital_per_exchange_check} USDT per exchange")
             
@@ -304,13 +321,10 @@ class TradingOpener:
                 
                 if transfer_needed['needed']:
                     logger.info(f"Eseguendo trasferimento interno per Bitfinex ({position_type}): {transfer_needed['amount']} USDT")
+                    logger.info(f"Piano trasferimenti: {len(transfer_needed['transfer_plan'])} step necessari")
                     
-                    # Esegue il trasferimento interno
-                    transfer_success = self._execute_bitfinex_internal_transfer(
-                        transfer_needed['amount'],
-                        transfer_needed['from_wallet'],
-                        'margin'
-                    )
+                    # Esegue il piano di trasferimenti multipli
+                    transfer_success = self._execute_bitfinex_internal_transfer(transfer_needed['transfer_plan'])
                     
                     if not transfer_success:
                         logger.error(f"Fallito trasferimento interno Bitfinex ({position_type})")
@@ -326,14 +340,119 @@ class TradingOpener:
         
         return success
     
+    def _get_bitfinex_wallet_distribution(self) -> Dict:
+        """Ottiene la distribuzione dettagliata dei fondi tra i wallet Bitfinex"""
+        try:
+            exchange = exchange_manager.exchanges['bitfinex']
+            wallets = ['exchange', 'margin', 'funding']
+            currencies = ['USTF0', 'USDT', 'UST']
+            distribution = {}
+            
+            for wallet in wallets:
+                distribution[wallet] = {}
+                try:
+                    balance = exchange.fetch_balance({'type': wallet})
+                    
+                    for currency in currencies:
+                        if currency in balance and balance[currency]['free'] > 0:
+                            distribution[wallet][currency] = balance[currency]['free']
+                        else:
+                            distribution[wallet][currency] = 0
+                            
+                except Exception as e:
+                    logger.warning(f"Errore recupero saldo {wallet}: {e}")
+                    for currency in currencies:
+                        distribution[wallet][currency] = 0
+            
+            # Calcola totali per wallet e valute
+            wallet_totals = {}
+            currency_totals = {}
+            
+            for wallet in wallets:
+                wallet_totals[wallet] = sum(distribution[wallet].values())
+                
+            for currency in currencies:
+                currency_totals[currency] = sum(distribution[wallet][currency] for wallet in wallets)
+            
+            distribution['totals'] = {
+                'by_wallet': wallet_totals,
+                'by_currency': currency_totals,
+                'grand_total': sum(wallet_totals.values())
+            }
+            
+            logger.debug(f"Distribuzione fondi Bitfinex: {distribution}")
+            return distribution
+            
+        except Exception as e:
+            logger.error(f"Errore recupero distribuzione wallet Bitfinex: {e}")
+            return {}
+
+    def _calculate_transfer_plan(self, distribution: Dict, required_amount: float) -> List[Dict]:
+        """Calcola il piano di trasferimento ottimale da wallet multipli"""
+        try:
+            transfer_plan = []
+            remaining_amount = required_amount
+            
+            # Priorità di trasferimento: exchange > funding > margin (escluso USTF0)
+            # Non trasferiamo da margin USTF0 perché è la destinazione
+            source_priorities = [
+                ('exchange', ['UST', 'USDT']),
+                ('funding', ['UST', 'USDT']),
+                ('margin', ['UST', 'USDT'])  # Solo UST/USDT, non USTF0
+            ]
+            
+            for wallet, currencies in source_priorities:
+                if remaining_amount <= 0:
+                    break
+                    
+                for currency in currencies:
+                    if remaining_amount <= 0:
+                        break
+                        
+                    available = distribution[wallet][currency]
+                    if available > 0:
+                        # Trasferisce il minimo tra disponibile e richiesto
+                        transfer_amount = min(available, remaining_amount)
+                        
+                        transfer_step = {
+                            'from_wallet': wallet,
+                            'to_wallet': 'margin',
+                            'currency_from': currency,
+                            'currency_to': 'USTF0',
+                            'amount': transfer_amount,
+                            'available': available
+                        }
+                        
+                        transfer_plan.append(transfer_step)
+                        remaining_amount -= transfer_amount
+                        
+                        logger.debug(f"Piano trasferimento: {transfer_amount} {currency} da {wallet} a margin")
+            
+            if remaining_amount > 0:
+                logger.warning(f"Piano trasferimento incompleto: mancano {remaining_amount} USDT")
+            
+            return transfer_plan
+            
+        except Exception as e:
+            logger.error(f"Errore calcolo piano trasferimento: {e}")
+            return []
+
     def _check_bitfinex_internal_transfer_needed(self, required_amount: float) -> Dict:
         """Controlla se è necessario un trasferimento interno in Bitfinex per derivatives"""
         try:
-            # Recupera saldi derivatives (USTF0) e totali
-            derivatives_balance = self._get_exchange_balance('bitfinex', balance_type='derivatives')
-            total_balance = self._get_exchange_balance('bitfinex', balance_type='total')
+            # Ottiene la distribuzione dettagliata dei fondi
+            distribution = self._get_bitfinex_wallet_distribution()
+            if not distribution:
+                raise Exception("Impossibile ottenere distribuzione wallet Bitfinex")
+            
+            # Saldo derivatives attuale (USTF0 nel wallet margin)
+            derivatives_balance = distribution['margin']['USTF0']
+            total_balance = distribution['totals']['grand_total']
             
             logger.info(f"Bitfinex - Saldo derivatives (USTF0): {derivatives_balance}, Saldo totale: {total_balance}")
+            logger.info(f"Distribuzione wallet: exchange={distribution['totals']['by_wallet']['exchange']:.2f}, "
+                       f"margin={distribution['totals']['by_wallet']['margin']:.2f}, "
+                       f"funding={distribution['totals']['by_wallet']['funding']:.2f}")
             
             # Se il wallet derivatives ha già fondi sufficienti
             if derivatives_balance >= required_amount:
@@ -343,17 +462,29 @@ class TradingOpener:
             transfer_amount = required_amount - derivatives_balance
             available_for_transfer = total_balance - derivatives_balance
             
-            if available_for_transfer < transfer_amount:
-                error_msg = f"Fondi insufficienti per trasferimento: disponibili {available_for_transfer}, richiesti {transfer_amount}"
+            # Applica tolleranza 1% per evitare blocchi per piccole differenze
+            tolerance_threshold = transfer_amount * 0.99  # 99% dell'importo richiesto
+            
+            if available_for_transfer < tolerance_threshold:
+                error_msg = f"Fondi insufficienti per trasferimento (con tolleranza 1%): disponibili {available_for_transfer}, richiesti {transfer_amount}, soglia minima {tolerance_threshold:.2f}"
                 raise Exception(error_msg)
+            
+            # Trasferisce il minimo tra quello richiesto e quello disponibile
+            actual_transfer_amount = min(transfer_amount, available_for_transfer)
+            
+            if actual_transfer_amount != transfer_amount:
+                logger.info(f"Applicata tolleranza trasferimento: richiesti {transfer_amount}, trasferiti {actual_transfer_amount} (disponibili: {available_for_transfer})")
+            
+            # Calcola la strategia di trasferimento ottimale
+            transfer_plan = self._calculate_transfer_plan(distribution, actual_transfer_amount)
             
             result = {
                 'needed': True,
-                'amount': transfer_amount,
-                'from_wallet': 'exchange',  # Assumiamo che i fondi extra siano nel wallet exchange
-                'to_wallet': 'margin',  # Il trasferimento verso margin con USTF0 va nel derivatives wallet
+                'amount': actual_transfer_amount,
+                'transfer_plan': transfer_plan,
                 'derivatives_balance': derivatives_balance,
-                'total_balance': total_balance
+                'total_balance': total_balance,
+                'distribution': distribution
             }
             
             return result
@@ -362,23 +493,56 @@ class TradingOpener:
             logger.error(f"Errore controllo trasferimento Bitfinex: {e}")
             raise
     
-    def _execute_bitfinex_internal_transfer(self, amount: float, from_wallet: str, to_wallet: str) -> bool:
-        """Esegue un trasferimento interno in Bitfinex"""
+    def _execute_bitfinex_internal_transfer(self, transfer_plan: List[Dict]) -> bool:
+        """Esegue un piano di trasferimenti interni multipli in Bitfinex"""
         try:
-            logger.info(f"Eseguendo trasferimento Bitfinex: {amount} USDT da {from_wallet} a {to_wallet}")
+            if not transfer_plan:
+                logger.warning("Piano trasferimento vuoto")
+                return False
             
-            # Usa il metodo esistente _bitfinex_internal_transfer
-            result = self._bitfinex_internal_transfer(amount, from_wallet, to_wallet)
+            total_transferred = 0
+            successful_transfers = 0
             
-            if result and result.get('success'):
-                logger.info(f"Trasferimento Bitfinex completato con successo")
+            for i, step in enumerate(transfer_plan):
+                from_wallet = step['from_wallet']
+                to_wallet = step['to_wallet']
+                amount = step['amount']
+                currency_from = step.get('currency_from', 'UST')
+                
+                logger.info(f"Eseguendo trasferimento {i+1}/{len(transfer_plan)}: {amount} {currency_from} da {from_wallet} a {to_wallet}")
+                
+                # Usa il metodo esistente _bitfinex_internal_transfer
+                result = self._bitfinex_internal_transfer(amount, from_wallet, to_wallet)
+                
+                if result and result.get('success'):
+                    logger.info(f"Trasferimento {i+1} completato con successo")
+                    total_transferred += amount
+                    successful_transfers += 1
+                else:
+                    error_msg = result.get('error', 'Errore sconosciuto') if result else 'Nessuna risposta'
+                    logger.error(f"Trasferimento {i+1} fallito: {error_msg}")
+                    
+                    # Se un trasferimento fallisce, interrompiamo la sequenza
+                    if successful_transfers == 0:
+                        # Se il primo trasferimento fallisce, ritorna False
+                        return False
+                    else:
+                        # Se alcuni trasferimenti sono riusciti, logga il parziale successo
+                        logger.warning(f"Trasferimenti parziali completati: {successful_transfers}/{len(transfer_plan)}, totale trasferito: {total_transferred}")
+                        break
+            
+            if successful_transfers == len(transfer_plan):
+                logger.info(f"Tutti i trasferimenti completati con successo. Totale trasferito: {total_transferred}")
                 return True
+            elif successful_transfers > 0:
+                logger.warning(f"Trasferimenti parziali: {successful_transfers}/{len(transfer_plan)} riusciti")
+                return True  # Consideriamo successo parziale come successo
             else:
-                logger.error(f"Trasferimento Bitfinex fallito: {result.get('error', 'Errore sconosciuto')}")
+                logger.error("Nessun trasferimento completato con successo")
                 return False
                 
         except Exception as e:
-            logger.error(f"Errore durante trasferimento Bitfinex: {e}")
+            logger.error(f"Errore durante esecuzione piano trasferimenti: {e}")
             return False
     
 
