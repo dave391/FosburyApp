@@ -208,6 +208,46 @@ def show_bot_control_section(current_bot, user_id):
             st.write(f"**Safety Percentage:** {current_bot.get('safety_threshold', 'N/A')}%")
             st.write(f"**Stop Loss:** {current_bot.get('stop_loss_percentage', 'N/A')}%")
     
+    # Sezione incremento capitale
+    st.subheader("Incremento Capitale")
+    
+    # Controllo del campo increase per mostrare l'interfaccia appropriata
+    if current_bot.get('increase', False):
+        # Se increase è True, mostra messaggio di operazioni in corso
+        st.warning("In questo momento stiamo effettuando operazioni sui tuoi account, torna più tardi per incrementare la tua posizione")
+    else:
+        # Se increase è False, mostra l'interfaccia di incremento
+        with st.form("capital_increase_form"):
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                capital_increase = st.number_input(
+                    "Importo da aggiungere (USDT)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    help="Inserisci l'importo da aggiungere al capitale esistente"
+                )
+            
+            with col2:
+                st.write("")  # Spazio vuoto per allineamento
+                st.write("")  # Spazio vuoto per allineamento
+                increase_capital = st.form_submit_button("Incrementa", use_container_width=True)
+            
+            if increase_capital:
+                if capital_increase <= 0:
+                    st.error("L'importo deve essere maggiore di 0")
+                else:
+                    # Salva i dati per il pop-up di conferma
+                    st.session_state.capital_increase_amount = capital_increase
+                    st.session_state.current_capital = current_bot.get('capital', 0)
+                    st.session_state.show_increment_confirmation = True
+                    st.rerun()
+    
+    # Mostra il pop-up di conferma se richiesto
+    if st.session_state.get('show_increment_confirmation', False):
+        show_increment_confirmation_popup(user_id)
+    
     # Form per fermare il bot
     if status not in [BOT_STATUS["STOP_REQUESTED"], BOT_STATUS["TRANSFER_REQUESTED"]]:
         st.subheader("Controllo APP")
@@ -299,3 +339,50 @@ def show_confirmation_popup():
                 st.rerun()
             else:
                 st.error("Errore nell'avvio dell'APP")
+
+@st.dialog("Conferma Incremento Capitale")
+def show_increment_confirmation_popup(user_id):
+    """Mostra il pop-up di conferma per l'incremento del capitale"""
+    
+    # Recupera i dati dal session state
+    capital_increase_amount = st.session_state.get('capital_increase_amount', 0)
+    current_capital = st.session_state.get('current_capital', 0)
+    new_total_capital = current_capital + capital_increase_amount
+    
+    st.write("### Riepilogo Incremento")
+    st.write("Conferma i dettagli dell'incremento del capitale:")
+    
+    # Mostra il riepilogo in formato tabella
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Importo da aggiungere:**")
+        st.write("**Capitale attuale:**")
+        st.write("**Nuovo capitale totale:**")
+    
+    with col2:
+        st.write(f"{capital_increase_amount:.2f} USDT")
+        st.write(f"{current_capital:.2f} USDT")
+        st.write(f"**{new_total_capital:.2f} USDT**")
+    
+    st.divider()
+    
+    # Bottoni di conferma
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("Modifica Parametri", use_container_width=True):
+            # Chiudi il pop-up e torna al form
+            st.session_state.show_increment_confirmation = False
+            st.rerun()
+    
+    with col2:
+        if st.button("Conferma Incremento", use_container_width=True):
+            # Esegui l'incremento del capitale
+            if bot_manager.update_capital_increase(user_id, capital_increase_amount, True):
+                st.session_state.show_increment_confirmation = False
+                st.success(f"Richiesta di incremento capitale di {capital_increase_amount} USDT inviata con successo!")
+                st.info("L'incremento verrà applicato al prossimo ciclo di elaborazione del bot.")
+                st.rerun()
+            else:
+                st.error("Errore nell'invio della richiesta di incremento capitale.")

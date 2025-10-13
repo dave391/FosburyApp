@@ -254,7 +254,9 @@ class BotManager:
                 "stopped_type": None,
                 "started_type": None,
                 "transfer_reason": None,
-                "transfer_amount": None
+                "transfer_amount": None,
+                "capital_increase": 0.0,
+                "increase": False
             }
             
             result = self.bots.insert_one(bot_data)
@@ -350,6 +352,38 @@ class BotManager:
             logger.error(f"Errore aggiornamento status bot: {e}")
             return False
     
+    def update_capital_increase(self, user_id: str, capital_increase: float, increase: bool = True) -> bool:
+        """Aggiorna i campi capital_increase e increase dell'istanza bot più recente dell'utente"""
+        try:
+            # Trova l'istanza bot più recente
+            latest_bot = self.get_user_bot(user_id)
+            if not latest_bot:
+                logger.warning(f"Nessun bot trovato per utente: {user_id}")
+                return False
+            
+            # Prepara update data
+            update_data = {
+                "capital_increase": capital_increase,
+                "increase": increase
+            }
+            
+            # Aggiorna l'istanza specifica tramite _id
+            result = self.bots.update_one(
+                {"_id": latest_bot["_id"]},
+                {"$set": update_data}
+            )
+            
+            if result.modified_count > 0:
+                logger.info(f"Capital increase aggiornato per bot {latest_bot['_id']} utente: {user_id}, amount: {capital_increase}, increase: {increase}")
+                return True
+            else:
+                logger.warning(f"Errore aggiornamento capital increase bot {latest_bot['_id']} per utente: {user_id}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Errore aggiornamento capital increase bot: {e}")
+            return False
+    
     def get_ready_bots(self) -> List[Dict]:
         """Recupera tutti i bot con status 'ready' o 'transfering'"""
         try:
@@ -404,23 +438,27 @@ class BotManager:
     
     def add_missing_fields_to_bots(self):
         """
-        Aggiunge i campi mancanti (rebalance_threshold, safety_threshold, stop_loss_percentage) ai bot esistenti
+        Aggiunge i campi mancanti (rebalance_threshold, safety_threshold, stop_loss_percentage, capital_increase, increase) ai bot esistenti
         
         Returns:
             int: Numero di bot aggiornati
         """
         try:
-            # Aggiorna tutti i bot che non hanno i campi rebalance_threshold, safety_threshold e stop_loss_percentage
+            # Aggiorna tutti i bot che non hanno i campi necessari
             result = self.bots.update_many(
                 {"$or": [
                     {"rebalance_threshold": {"$exists": False}},
                     {"safety_threshold": {"$exists": False}},
-                    {"stop_loss_percentage": {"$exists": False}}
+                    {"stop_loss_percentage": {"$exists": False}},
+                    {"capital_increase": {"$exists": False}},
+                    {"increase": {"$exists": False}}
                 ]},
                 {"$set": {
                     "rebalance_threshold": None,
                     "safety_threshold": None,
-                    "stop_loss_percentage": None
+                    "stop_loss_percentage": None,
+                    "capital_increase": 0.0,
+                    "increase": False
                 }}
             )
             
@@ -683,6 +721,53 @@ class PositionManager:
                 
         except Exception as e:
             logger.error(f"Errore aggiornamento threshold posizione: {e}")
+            return False
+    
+    def update_existing_position(self, position_id: str, new_size: float, new_entry_price: float, 
+                               new_liquidation_price: float = None, new_safety_value: float = None, 
+                               new_rebalance_value: float = None) -> bool:
+        """
+        Aggiorna una posizione esistente con nuovi valori durante incremento capitale
+        
+        Args:
+            position_id: ID della posizione da aggiornare
+            new_size: Nuova size totale della posizione
+            new_entry_price: Nuovo entry price medio
+            new_liquidation_price: Nuovo liquidation price (opzionale)
+            new_safety_value: Nuovo safety value (opzionale)
+            new_rebalance_value: Nuovo rebalance value (opzionale)
+            
+        Returns:
+            bool: True se aggiornamento riuscito
+        """
+        try:
+            update_data = {
+                "size": float(new_size),
+                "entry_price": float(new_entry_price),
+                "increment_updated_at": datetime.utcnow()
+            }
+            
+            if new_liquidation_price is not None:
+                update_data["liquidation_price"] = float(new_liquidation_price)
+            if new_safety_value is not None:
+                update_data["safety_value"] = float(new_safety_value)
+            if new_rebalance_value is not None:
+                update_data["rebalance_value"] = float(new_rebalance_value)
+            
+            result = self.positions.update_one(
+                {"position_id": position_id},
+                {"$set": update_data}
+            )
+            
+            if result.modified_count > 0:
+                logger.info(f"✅ Posizione {position_id} aggiornata con successo - Size: {new_size}, Entry: {new_entry_price}")
+                return True
+            else:
+                logger.warning(f"❌ Nessuna posizione trovata con ID: {position_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Errore aggiornamento posizione esistente: {e}")
             return False
 
 # Istanze globali

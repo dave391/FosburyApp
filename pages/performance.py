@@ -86,12 +86,12 @@ def load_dashboard_data():
     if not target_email:
         return None, None, "Email utente non trovata"
     
-    # Recupera dati di funding e fee di trading
+    # Recupera dati di funding, fee di trading e fee di withdrawal
     # Usa created_at come data di riferimento invece di started_at
     bot_created_at = current_bot.get('created_at')
-    funding_events, trading_fees, error = get_all_funding_data(target_email, bot_created_at)
+    funding_events, trading_fees, withdrawal_fees, error = get_all_funding_data(target_email, bot_created_at)
     
-    return funding_events, trading_fees, current_bot, error
+    return funding_events, trading_fees, withdrawal_fees, current_bot, error
 
 def display_kpi_cards(metrics: dict):
     """Visualizza le card con le metriche chiave"""
@@ -192,7 +192,7 @@ def main():
     # Carica dati automaticamente all'apertura della pagina o quando si clicca refresh
     if refresh_button or 'dashboard_data_loaded' not in st.session_state:
         with st.spinner("Caricamento dati..."):
-            funding_events, trading_fees, current_bot, error = load_dashboard_data()
+            funding_events, trading_fees, withdrawal_fees, current_bot, error = load_dashboard_data()
             
             if error:
                 st.error(f"Errore nel caricamento dei dati: {error}")
@@ -216,17 +216,18 @@ def main():
                 st.error("Impossibile calcolare il capitale iniziale dalle posizioni")
                 return
             
-            # Calcola metriche (incluse le fee di trading)
-            metrics = calculate_metrics(funding_events, start_date, initial_capital, trading_fees)
+            # Calcola metriche (incluse le fee di trading e withdrawal)
+            metrics = calculate_metrics(funding_events, start_date, initial_capital, trading_fees, withdrawal_fees)
             
 
             # Calcola dati per grafico
-            daily_pnl_data = get_daily_pnl_data(funding_events, start_date, trading_fees)
+            daily_pnl_data = get_daily_pnl_data(funding_events, start_date, trading_fees, withdrawal_fees)
             
             # Salva in session state
             st.session_state.dashboard_data_loaded = True
             st.session_state.funding_events = funding_events
             st.session_state.trading_fees = trading_fees
+            st.session_state.withdrawal_fees = withdrawal_fees
             st.session_state.current_bot = current_bot
             st.session_state.metrics = metrics
             st.session_state.daily_pnl_data = daily_pnl_data
@@ -246,16 +247,19 @@ def main():
             
             start_date = st.session_state.get('start_date')
             trading_fees = st.session_state.get('trading_fees', [])
+            withdrawal_fees = st.session_state.get('withdrawal_fees', [])
             metrics = calculate_metrics(
                 st.session_state.funding_events, 
                 start_date, 
                 initial_capital,
-                trading_fees
+                trading_fees,
+                withdrawal_fees
             )
             daily_pnl_data = get_daily_pnl_data(
                 st.session_state.funding_events, 
                 start_date,
-                trading_fees
+                trading_fees,
+                withdrawal_fees
             )
             
             st.session_state.metrics = metrics
@@ -284,10 +288,20 @@ def main():
         
         with col2:
             st.metric("PnL Netto", f"{st.session_state.metrics['net_pnl']:.2f} USDT")
-            st.metric("Fee", f"{st.session_state.metrics['total_fees']:.2f} USDT")
+            st.metric("Fee Totali", f"{st.session_state.metrics['total_fees']:.2f} USDT")
             # Calcola ROI basato sul capitale iniziale effettivo
             roi_percentage = (st.session_state.metrics['net_pnl'] / initial_capital * 100) if initial_capital > 0 else 0
             st.metric("ROI Totale", f"{roi_percentage:.2f}%")
+        
+        # Sezione dettaglio fee
+        st.subheader("Dettaglio Fee")
+        col_fee1, col_fee2 = st.columns(2)
+        
+        with col_fee1:
+            st.metric("Fee Trading", f"{st.session_state.metrics['trading_fees']:.2f} USDT")
+        
+        with col_fee2:
+            st.metric("Fee Trasferimento", f"{st.session_state.metrics['withdrawal_fees']:.2f} USDT")
         
         # Tabella riepilogo PnL giornalieri
         st.subheader("Riepilogo PnL Giornalieri")
@@ -303,12 +317,19 @@ def main():
             pnl_table['PnL Giornaliero'] = pnl_table['daily_pnl'].apply(lambda x: f"{x:.2f} USDT")
             pnl_table['PnL Cumulativo'] = pnl_table['cumulative_pnl'].apply(lambda x: f"{x:.2f} USDT")
             
-            # Aggiungi colonna fee di trading se disponibile
+            # Aggiungi colonne fee se disponibili
+            columns_to_display = ['Data', 'PnL Giornaliero']
+            
             if 'trading_fees' in pnl_table.columns:
                 pnl_table['Fee Trading'] = pnl_table['trading_fees'].apply(lambda x: f"{x:.2f} USDT" if x > 0 else "-")
-                display_table = pnl_table[['Data', 'PnL Giornaliero', 'Fee Trading', 'PnL Cumulativo']]
-            else:
-                display_table = pnl_table[['Data', 'PnL Giornaliero', 'PnL Cumulativo']]
+                columns_to_display.append('Fee Trading')
+            
+            if 'withdrawal_fees' in pnl_table.columns:
+                pnl_table['Fee Trasferimento'] = pnl_table['withdrawal_fees'].apply(lambda x: f"{x:.2f} USDT" if x > 0 else "-")
+                columns_to_display.append('Fee Trasferimento')
+            
+            columns_to_display.append('PnL Cumulativo')
+            display_table = pnl_table[columns_to_display]
             
             # Mostra la tabella (già ordinata per data decrescente)
             st.dataframe(
@@ -418,6 +439,84 @@ def main():
                     st.warning("Nessuna fee di trading trovata nel periodo selezionato")
         else:
             st.info("Nessuna fee di trading disponibile")
+        
+        # Sezione Debug - Elenco Fee di Trasferimento
+        st.markdown("---")
+        st.subheader("🔍 Debug - Fee di Trasferimento Conteggiate")
+        
+        if 'withdrawal_fees' in st.session_state and st.session_state.withdrawal_fees:
+            withdrawal_fees = st.session_state.withdrawal_fees
+            start_date = st.session_state.get('start_date')
+            
+            # Filtra le fee dalla data di creazione (stesso filtro usato in calculate_metrics)
+            filtered_withdrawal_fees = []
+            for fee in withdrawal_fees:
+                if fee['date']:
+                    fee_date = fee['date']
+                    # Assicurati che entrambe le date siano naive (senza timezone) per il confronto
+                    if fee_date.tzinfo is not None:
+                        fee_date = fee_date.replace(tzinfo=None)
+                    
+                    # Converte start_date in naive se ha timezone
+                    comparison_start_date = start_date
+                    if start_date and start_date.tzinfo is not None:
+                        comparison_start_date = start_date.replace(tzinfo=None)
+                    
+                    # Aggiungi buffer di 5 secondi prima della data di creazione per includere fee
+                    # che potrebbero essere registrate leggermente prima a causa di discrepanze temporali
+                    if comparison_start_date:
+                        from datetime import timedelta
+                        buffer_start_date = comparison_start_date - timedelta(seconds=5)
+                        
+                        # Fee valide: da 5 secondi prima della creazione in poi
+                        if fee_date >= buffer_start_date:
+                            filtered_withdrawal_fees.append(fee)
+            
+            if filtered_withdrawal_fees:
+                # Crea DataFrame per visualizzazione
+                debug_withdrawal_data = []
+                total_withdrawal_fees_debug = 0
+                
+                for fee in filtered_withdrawal_fees:
+                    # Mostra data e informazioni fuso orario per debug
+                    date_str = fee['date'].strftime('%d/%m/%Y %H:%M') if fee['date'] else 'N/A'
+                    timezone_info = fee.get('timezone_info', 'N/A')
+                    
+                    debug_withdrawal_data.append({
+                        'Data': date_str,
+                        'Fuso Orario': timezone_info,
+                        'Exchange': fee['exchange'].upper(),
+                        'Valuta': fee.get('currency', 'N/A'),
+                        'Fee (USDT)': f"{fee['amount']:.6f}",
+                        'Category': fee.get('category', 'N/A'),
+                        'Type': fee.get('type', 'N/A'),
+                        'Descrizione': fee.get('description', 'N/A')
+                    })
+                    total_withdrawal_fees_debug += fee['amount']
+                
+                debug_withdrawal_df = pd.DataFrame(debug_withdrawal_data)
+                
+                # Mostra statistiche riassuntive
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Totale Fee Trasferimento", f"{total_withdrawal_fees_debug:.6f} USDT")
+                with col2:
+                    st.metric("Numero Transazioni", len(filtered_withdrawal_fees))
+                with col3:
+                    bitfinex_count = len([f for f in filtered_withdrawal_fees if f['exchange'] == 'bitfinex'])
+                    bitmex_count = len([f for f in filtered_withdrawal_fees if f['exchange'] == 'bitmex'])
+                    st.metric("Bitfinex/BitMEX", f"{bitfinex_count}/{bitmex_count}")
+                
+                # Mostra tabella dettagliata
+                st.dataframe(
+                    debug_withdrawal_df.sort_values('Data', ascending=False).reset_index(drop=True),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Nessuna fee di trasferimento trovata nel periodo considerato")
+        else:
+            st.warning("Nessuna fee di trasferimento trovata per questo bot")
         
         # Sezione Debug - Tabella Funding Events per Exchange
         st.markdown("---")

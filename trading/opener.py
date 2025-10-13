@@ -95,12 +95,20 @@ class TradingOpener:
             user_id = bot_config['user_id']
             exchange_long = bot_config['exchange_long']
             exchange_short = bot_config['exchange_short']
-            capital = bot_config['capital']
             leverage = bot_config['leverage']
             bot_status = bot_config.get('status')
             stop_loss_percentage = bot_config.get('stop_loss_percentage', 20)  # Default 20% se non specificato
             
-            logger.info(f"Configurazione bot: Long={exchange_long}, Short={exchange_short}, Capital={capital}, Leverage={leverage}, Status={bot_status}")
+            # Determina il capitale da usare in base al flag increase
+            is_increment = bot_config.get('increase', False)
+            if is_increment:
+                capital = bot_config.get('capital_increase', 0.0)
+                logger.info(f"Modalità incremento capitale: usando capital_increase = {capital} USDT")
+            else:
+                capital = bot_config['capital']
+                logger.info(f"Modalità normale: usando capital = {capital} USDT")
+            
+            logger.info(f"Configurazione bot: Long={exchange_long}, Short={exchange_short}, Capital={capital}, Leverage={leverage}, Status={bot_status}, Increment={is_increment}")
             
             # Recupera API keys utente
             api_keys = user_manager.get_user_api_keys(user_id)
@@ -123,17 +131,20 @@ class TradingOpener:
             logger.info(f"Available balance: {available_balance} USDT")
             logger.info(f"Stop loss percentage: {stop_loss_percentage}%")
             
-            # CONTROLLO SPECIFICO PER BOT TRANSFERING: Verifica stop loss
+            # CONTROLLO SPECIFICO PER BOT TRANSFERING: Verifica stop loss (saltato per incrementi di capitale)
             if bot_status == BOT_STATUS["TRANSFERING"]:
-                stop_loss_threshold = capital - (capital * stop_loss_percentage / 100)
-                logger.info(f"Bot TRANSFERING - Controllo stop loss: available_balance ({available_balance}) vs threshold ({stop_loss_threshold})")
-                
-                if available_balance <= stop_loss_threshold:
-                    logger.warning(f"Bot TRANSFERING {user_id}: Stop loss attivato! Available balance {available_balance} <= threshold {stop_loss_threshold}")
-                    bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "stop_loss")
-                    return "stop_loss_triggered"
+                if is_increment:
+                    logger.info(f"Bot TRANSFERING {user_id}: Incremento capitale - salto controllo stop loss")
                 else:
-                    logger.info(f"Bot TRANSFERING {user_id}: Stop loss OK, procedo con available_balance")
+                    stop_loss_threshold = capital - (capital * stop_loss_percentage / 100)
+                    logger.info(f"Bot TRANSFERING - Controllo stop loss: available_balance ({available_balance}) vs threshold ({stop_loss_threshold})")
+                    
+                    if available_balance <= stop_loss_threshold:
+                        logger.warning(f"Bot TRANSFERING {user_id}: Stop loss attivato! Available balance {available_balance} <= threshold {stop_loss_threshold}")
+                        bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "stop_loss")
+                        return "stop_loss_triggered"
+                    else:
+                        logger.info(f"Bot TRANSFERING {user_id}: Stop loss OK, procedo con available_balance")
             
             # Determina se applicare logica READY (per bot READY o TRANSFERING con first_start)
             transfer_reason = bot_config.get('transfer_reason')
@@ -163,7 +174,14 @@ class TradingOpener:
             capital_with_leverage = capital_per_exchange_sizing * leverage  # Applica leva per calcolo size
             
             # Per il controllo dei requisiti, determina il valore in base alla logica specifica
-            if bot_status == BOT_STATUS["READY"]:
+            if is_increment:
+                # 🔄 MODALITÀ INCREMENTO: Usa solo il capitale aggiuntivo per il controllo
+                capital_per_exchange_check = capital / 2  # capital è già capital_increase in modalità incremento
+                logger.info(f"🔄 MODALITÀ INCREMENTO: Controllo solo capitale aggiuntivo: {capital_per_exchange_check} USDT per exchange")
+                logger.info(f"   Capitale aggiunto dall'utente: {capital} USDT")
+                logger.info(f"   Available balance totale: {available_balance} USDT")
+                logger.info(f"   Distribuzione richiesta: {capital_per_exchange_check} USDT per exchange")
+            elif bot_status == BOT_STATUS["READY"]:
                 # Logica READY: Applica tolleranza del 2% sul capitale configurato
                 tolerance_percentage = 2.0  # 2% di tolleranza
                 min_capital_with_tolerance = capital * (1 - tolerance_percentage / 100)
@@ -190,7 +208,7 @@ class TradingOpener:
             logger.info(f"Capitale con leva per exchange: {capital_with_leverage} USDT (per ordini)")
             
             # Usa capital_per_exchange_check per il controllo dei requisiti di capitale
-            capital_check = self.check_capital_requirements(exchange_long, exchange_short, capital_per_exchange_check)
+            capital_check = self.check_capital_requirements(exchange_long, exchange_short, capital_per_exchange_check, is_increment=is_increment)
             if not capital_check['overall_success']:
                 logger.error(f"Controllo capitale fallito: {capital_check}")
                 return self._handle_balance_failure(capital_check, user_id)
@@ -221,6 +239,26 @@ class TradingOpener:
             
             # Apri posizioni
             if self.open_positions(exchange_long, exchange_short, size_long, size_short, leverage, user_id, bot_config.get('_id'), bot_config):
+                # Se è un incremento, aggiorna il capitale nel database dopo il successo
+                if is_increment:
+                    capital_increase = bot_config.get('capital_increase', 0.0)
+                    current_capital = bot_config.get('capital', 0.0)
+                    new_capital = current_capital + capital_increase
+                    
+                    logger.info(f"Incremento completato con successo. Aggiornamento capitale: {current_capital} + {capital_increase} = {new_capital}")
+                    
+                    # Aggiorna il capitale totale nel database
+                    bot_manager.bots.update_one(
+                        {"_id": bot_config["_id"]},
+                        {"$set": {
+                            "capital": new_capital,
+                            "capital_increase": 0.0,
+                            "increase": False
+                        }}
+                    )
+                    
+                    logger.info(f"Capitale bot {user_id} aggiornato con successo a {new_capital} USDT")
+                
                 return "success"
             else:
                 return "trading_error"
@@ -229,7 +267,7 @@ class TradingOpener:
             logger.error(f"Errore esecuzione strategia: {e}")
             return "error"
     
-    def check_capital_requirements(self, exchange_long: str, exchange_short: str, required_amount: float) -> Dict:
+    def check_capital_requirements(self, exchange_long: str, exchange_short: str, required_amount: float, is_increment: bool = False) -> Dict:
         """Controlla capitale totale, distribuzione tra exchange e esegue automaticamente trasferimenti interni"""
         results = {
             'long_exchange': {'name': exchange_long, 'success': False, 'balance': 0},
@@ -286,7 +324,7 @@ class TradingOpener:
             logger.info("STEP 2 OK - Distribuzione tra exchange sufficiente")
             
             # STEP 3: Controllo e esecuzione automatica trasferimenti interni
-            internal_transfer_success = self._check_and_execute_internal_transfers(exchange_long, exchange_short, required_amount)
+            internal_transfer_success = self._check_and_execute_internal_transfers(exchange_long, exchange_short, required_amount, is_increment=is_increment)
             
             if internal_transfer_success:
                 logger.info("STEP 3 OK - Wallet interni pronti per il trading")
@@ -303,7 +341,7 @@ class TradingOpener:
             logger.error(f"Errore durante controllo capitale: {e}")
             return results
     
-    def _check_and_execute_internal_transfers(self, exchange_long: str, exchange_short: str, required_amount: float) -> bool:
+    def _check_and_execute_internal_transfers(self, exchange_long: str, exchange_short: str, required_amount: float, is_increment: bool = False) -> bool:
         """Controlla e esegue automaticamente i trasferimenti interni necessari"""
         success = True
         
@@ -317,7 +355,7 @@ class TradingOpener:
         for exchange, position_type in exchanges_to_check:
             try:
                 # Controlla se è necessario un trasferimento interno
-                transfer_needed = self._check_bitfinex_internal_transfer_needed(required_amount)
+                transfer_needed = self._check_bitfinex_internal_transfer_needed(required_amount, is_increment=is_increment)
                 
                 if transfer_needed['needed']:
                     logger.info(f"Eseguendo trasferimento interno per Bitfinex ({position_type}): {transfer_needed['amount']} USDT")
@@ -437,7 +475,7 @@ class TradingOpener:
             logger.error(f"Errore calcolo piano trasferimento: {e}")
             return []
 
-    def _check_bitfinex_internal_transfer_needed(self, required_amount: float) -> Dict:
+    def _check_bitfinex_internal_transfer_needed(self, required_amount: float, is_increment: bool = False) -> Dict:
         """Controlla se è necessario un trasferimento interno in Bitfinex per derivatives"""
         try:
             # Ottiene la distribuzione dettagliata dei fondi
@@ -454,7 +492,24 @@ class TradingOpener:
                        f"margin={distribution['totals']['by_wallet']['margin']:.2f}, "
                        f"funding={distribution['totals']['by_wallet']['funding']:.2f}")
             
-            # Se il wallet derivatives ha già fondi sufficienti
+            # 🔄 MODALITÀ INCREMENTO: Logica speciale per incrementi
+            if is_increment:
+                # Per Bitfinex, margin e derivatives sono lo stesso wallet
+                # Se ci sono già fondi sufficienti nel margin (che è derivatives), non serve trasferimento
+                total_margin_balance = distribution['totals']['by_wallet']['margin']
+                
+                logger.info(f"🔄 MODALITÀ INCREMENTO - Controllo fondi esistenti nel wallet margin/derivatives")
+                logger.info(f"   Fondi disponibili nel margin: {total_margin_balance} USDT")
+                logger.info(f"   Fondi richiesti per incremento: {required_amount} USDT")
+                
+                if total_margin_balance >= required_amount:
+                    logger.info(f"🔄 INCREMENTO: Fondi sufficienti già presenti nel wallet margin/derivatives ({total_margin_balance} >= {required_amount})")
+                    logger.info(f"🔄 INCREMENTO: Saltando trasferimento interno - procedendo direttamente con apertura posizioni")
+                    return {'needed': False, 'derivatives_balance': derivatives_balance, 'increment_mode': True}
+                else:
+                    logger.info(f"🔄 INCREMENTO: Fondi insufficienti nel margin/derivatives - serve trasferimento interno")
+            
+            # Se il wallet derivatives ha già fondi sufficienti (logica normale)
             if derivatives_balance >= required_amount:
                 return {'needed': False, 'derivatives_balance': derivatives_balance}
             
@@ -728,8 +783,25 @@ class TradingOpener:
                       user_id: str, bot_id: str, bot_config: Dict) -> bool:
         """Apre posizioni sui due exchange con leva specificata"""
         try:
-            logger.info(f"Apertura posizioni con leva {leverage}x...")
+            # Verifica se è un incremento di capitale
+            is_increment = bot_config.get('increase', False)
             
+            if is_increment:
+                logger.info(f"🔄 MODALITÀ INCREMENTO: Aggiornamento posizioni esistenti con leva {leverage}x...")
+                return self.increment_existing_positions(exchange_long, exchange_short, size_long, size_short, leverage, user_id, bot_id, bot_config)
+            else:
+                logger.info(f"🆕 MODALITÀ NORMALE: Apertura nuove posizioni con leva {leverage}x...")
+                return self.create_new_positions(exchange_long, exchange_short, size_long, size_short, leverage, user_id, bot_id, bot_config)
+            
+        except Exception as e:
+            logger.error(f"Errore gestione posizioni: {e}")
+            return False
+    
+    def create_new_positions(self, exchange_long: str, exchange_short: str, 
+                           size_long: float, size_short: float, leverage: float, 
+                           user_id: str, bot_id: str, bot_config: Dict) -> bool:
+        """Crea nuove posizioni sui due exchange"""
+        try:
             # Apri posizione LONG
             order_long = exchange_manager.create_market_order(
                 exchange_long, 'buy', size_long, leverage
@@ -761,12 +833,138 @@ class TradingOpener:
             # Salva posizione SHORT nel database
             self.save_position_to_db(order_short, user_id, bot_id, exchange_short, "short", leverage, bot_config)
             
-            logger.info("Strategia di funding arbitrage attivata con successo!")
+            logger.info("✅ Strategia di funding arbitrage attivata con successo!")
             
             return True
             
         except Exception as e:
-            logger.error(f"Errore apertura posizioni: {e}")
+            logger.error(f"Errore creazione nuove posizioni: {e}")
+            return False
+    
+    def increment_existing_positions(self, exchange_long: str, exchange_short: str, 
+                                   size_long: float, size_short: float, leverage: float, 
+                                   user_id: str, bot_id: str, bot_config: Dict) -> bool:
+        """Incrementa posizioni esistenti durante aumento capitale"""
+        try:
+            # Recupera posizioni esistenti aperte per questo bot
+            existing_positions = position_manager.get_bot_open_positions(bot_id)
+            
+            if not existing_positions:
+                logger.error(f"❌ Nessuna posizione esistente trovata per bot {bot_id} durante incremento")
+                return False
+            
+            logger.info(f"📊 Trovate {len(existing_positions)} posizioni esistenti da incrementare")
+            
+            # Organizza posizioni per exchange e side
+            positions_map = {}
+            for pos in existing_positions:
+                key = f"{pos['exchange']}_{pos['side']}"
+                positions_map[key] = pos
+                logger.info(f"Posizione esistente: {pos['exchange']} {pos['side']} - Size: {pos['size']} - Entry: {pos['entry_price']}")
+            
+            # Verifica che esistano le posizioni attese
+            long_key = f"{exchange_long}_long"
+            short_key = f"{exchange_short}_short"
+            
+            if long_key not in positions_map or short_key not in positions_map:
+                logger.error(f"❌ Posizioni mancanti per incremento: {long_key} o {short_key}")
+                return False
+            
+            # Apri posizioni incrementali
+            order_long = exchange_manager.create_market_order(
+                exchange_long, 'buy', size_long, leverage
+            )
+            
+            if not order_long:
+                logger.error(f"❌ Errore apertura incremento long su {exchange_long}")
+                return False
+            
+            order_short = exchange_manager.create_market_order(
+                exchange_short, 'sell', size_short, leverage
+            )
+            
+            if not order_short:
+                logger.error(f"❌ Errore apertura incremento short su {exchange_short}")
+                # Prova a chiudere posizione long incrementale
+                logger.info("Tentativo chiusura incremento long...")
+                exchange_manager.close_position(exchange_long)
+                return False
+            
+            logger.info(f"✅ Incrementi aperti - Long: {order_long['amount']}, Short: {order_short['amount']}")
+            
+            # Aggiorna posizioni esistenti con nuovi valori
+            success_long = self.update_position_with_increment(
+                positions_map[long_key], order_long, bot_config
+            )
+            
+            success_short = self.update_position_with_increment(
+                positions_map[short_key], order_short, bot_config
+            )
+            
+            if success_long and success_short:
+                logger.info("✅ Incremento posizioni completato con successo!")
+                return True
+            else:
+                logger.error("❌ Errore aggiornamento posizioni durante incremento")
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Errore incremento posizioni esistenti: {e}")
+            return False
+    
+    def update_position_with_increment(self, existing_position: Dict, new_order: Dict, bot_config: Dict) -> bool:
+        """Aggiorna una posizione esistente con i dati dell'incremento"""
+        try:
+            # Dati posizione esistente
+            old_size = float(existing_position['size'])
+            old_entry_price = float(existing_position['entry_price'])
+            old_liquidation_price = float(existing_position.get('liquidation_price', 0))
+            
+            # Dati nuovo ordine
+            increment_size = float(new_order['amount'])
+            increment_entry_price = float(new_order['price'])
+            
+            # Calcola nuovo size totale
+            new_total_size = old_size + increment_size
+            
+            # Calcola nuovo entry price medio ponderato
+            old_value = old_size * old_entry_price
+            increment_value = increment_size * increment_entry_price
+            new_avg_entry_price = (old_value + increment_value) / new_total_size
+            
+            logger.info(f"📊 Calcolo nuovo entry price:")
+            logger.info(f"   Posizione esistente: {old_size} @ {old_entry_price} = {old_value}")
+            logger.info(f"   Incremento: {increment_size} @ {increment_entry_price} = {increment_value}")
+            logger.info(f"   Nuovo totale: {new_total_size} @ {new_avg_entry_price}")
+            
+            # Calcola nuovo liquidation price (approssimativo)
+            # Per ora manteniamo quello esistente, poi si può migliorare
+            new_liquidation_price = old_liquidation_price
+            
+            # Calcola nuovi safety e rebalance values
+            leverage = bot_config.get('leverage', 1)
+            new_safety_value = new_avg_entry_price * new_total_size * 0.05  # 5% del valore posizione
+            new_rebalance_value = new_avg_entry_price * new_total_size * 0.02  # 2% del valore posizione
+            
+            # Aggiorna posizione nel database
+            success = position_manager.update_existing_position(
+                position_id=existing_position['position_id'],
+                new_size=new_total_size,
+                new_entry_price=new_avg_entry_price,
+                new_liquidation_price=new_liquidation_price,
+                new_safety_value=new_safety_value,
+                new_rebalance_value=new_rebalance_value
+            )
+            
+            if success:
+                logger.info(f"✅ Posizione {existing_position['position_id']} aggiornata: {old_size} → {new_total_size}")
+                return True
+            else:
+                logger.error(f"❌ Errore aggiornamento posizione {existing_position['position_id']}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Errore calcolo incremento posizione: {e}")
             return False
     
     def save_position_to_db(self, order: Dict, user_id: str, bot_id: str, exchange_name: str, 

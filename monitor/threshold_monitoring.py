@@ -1,9 +1,11 @@
-"""Threshold Monitoring - Modulo per monitorare e aggiornare valori threshold
+"""Threshold Monitoring - Modulo per monitorare bot attivi e gestire incrementi capitale
 
-Questo script monitora i bot con stato "running" e aggiorna:
-- liquidation_price dalle API degli exchange
-- safety_value calcolato come percentuale dal liquidation_price
-- rebalance_value calcolato come percentuale dal liquidation_price
+Questo script monitora tutti i bot attivi (tranne STOPPED) e:
+- Controlla richieste di incremento capitale (increase = True) per bot RUNNING
+- Aggiorna valori threshold per bot RUNNING:
+  - liquidation_price dalle API degli exchange
+  - safety_value calcolato come percentuale dal liquidation_price
+  - rebalance_value calcolato come percentuale dal liquidation_price
 
 Uso:
     python -m trading.threshold_monitoring
@@ -20,8 +22,12 @@ from trading.exchange_manager import exchange_manager
 from config.settings import BOT_STATUS
 
 class ThresholdMonitor:
-    """Classe che gestisce il monitoraggio e aggiornamento dei valori threshold
-    per i bot con stato "running"
+    """Classe che gestisce il monitoraggio dei bot attivi e gli incrementi di capitale
+    
+    Funzionalità:
+    - Monitora tutti i bot attivi (tranne STOPPED)
+    - Gestisce richieste di incremento capitale (RUNNING -> READY)
+    - Aggiorna valori threshold per bot RUNNING
     """
     
     def __init__(self):
@@ -29,29 +35,29 @@ class ThresholdMonitor:
         pass
     
     def run(self):
-        """Esegue il monitoraggio per cercare bot con stato "running"""
+        """Esegue il monitoraggio per tutti i bot attivi (tranne STOPPED)"""
         try:
-            # Cerca bot con stato "running"
-            running_bots = self.get_running_bots()
+            # Cerca tutti i bot attivi (tranne STOPPED)
+            active_bots = self.get_active_bots()
             
-            if running_bots:
+            if active_bots:
                 # Processa ogni bot
-                for bot in running_bots:
+                for bot in active_bots:
                     self.process_bot(bot)
             
         except Exception as e:
             print(f"Errore nel ciclo di monitoraggio: {e}")
     
-    def get_running_bots(self) -> List[Dict]:
-        """Recupera tutti i bot con status 'running'"""
+    def get_active_bots(self) -> List[Dict]:
+        """Recupera tutti i bot attivi (tutti tranne STOPPED)"""
         try:
-            return list(bot_manager.bots.find({"status": BOT_STATUS["RUNNING"]}))
+            return list(bot_manager.bots.find({"status": {"$ne": BOT_STATUS["STOPPED"]}}))
         except Exception as e:
-            print(f"Errore recupero bot running: {e}")
+            print(f"Errore recupero bot attivi: {e}")
             return []
     
     def process_bot(self, bot: Dict):
-        """Processa un bot con stato "running"
+        """Processa un bot attivo
         
         Args:
             bot: Dati del bot da processare
@@ -59,6 +65,20 @@ class ThresholdMonitor:
         try:
             user_id = bot["user_id"]
             bot_id = bot["_id"]
+            bot_status = bot.get("status")
+            
+            # CONTROLLO INCREMENTO CAPITALE
+            # Se bot è RUNNING e ha increase = True, cambia stato a READY
+            if (bot_status == BOT_STATUS["RUNNING"] and 
+                bot.get("increase") is True):
+                print(f"Bot {bot_id}: rilevato incremento capitale, cambio stato da RUNNING a READY")
+                bot_manager.update_bot_status(user_id, BOT_STATUS["READY"])
+                return
+            
+            # MONITORAGGIO THRESHOLD (solo per bot RUNNING)
+            if bot_status != BOT_STATUS["RUNNING"]:
+                return
+                
             safety_threshold = bot.get("safety_threshold")
             rebalance_threshold = bot.get("rebalance_threshold")
             

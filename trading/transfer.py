@@ -80,7 +80,14 @@ class TransferManager:
             user_id = bot['user_id']
             exchange_long = bot['exchange_long']
             exchange_short = bot['exchange_short']
-            capital = bot['capital']
+            
+            # Determina quale capitale usare per i calcoli
+            if bot.get('increase', False):
+                capital = bot.get('capital_increase', 0)
+                logger.info(f"Bot {bot['_id']}: usando capital_increase per calcoli: {capital} USDT")
+            else:
+                capital = bot['capital']
+                logger.info(f"Bot {bot['_id']}: usando capital standard per calcoli: {capital} USDT")
             
             logger.info(f"CICLO 1 - Processing trasferimento interno per bot {bot['_id']}: {exchange_long} <-> {exchange_short}")
             
@@ -468,12 +475,19 @@ class TransferManager:
             for exchange_name, exchange in exchanges.items():
                 # Usa la logica dettagliata per ogni exchange
                 balance_details = self._get_exchange_balance_detailed(exchange_name)
-                balances[exchange_name] = balance_details['total']
                 
-                logger.info(f"Bilancio {exchange_name}: {balance_details['total']:.2f} USDT")
-                if balance_details['wallet_details']:
+                # Assicurati che total sia un numero valido
+                total = balance_details.get('total', 0)
+                if total is None:
+                    logger.warning(f"Bilancio {exchange_name} è None, impostato a 0")
+                    total = 0
+                
+                balances[exchange_name] = total
+                
+                logger.info(f"Bilancio {exchange_name}: {total:.2f} USDT")
+                if balance_details.get('wallet_details'):
                     for wallet, amount in balance_details['wallet_details'].items():
-                        if amount > 0:
+                        if amount and amount > 0:
                             logger.info(f"  {wallet}: {amount:.2f} USDT")
             
             return balances
@@ -490,41 +504,74 @@ class TransferManager:
                 logger.info("Modalità rebalance: calcolo trasferimento basato su margini richiesti delle posizioni")
                 return self._calculate_rebalance_transfer(bot, balances, exchange_long, exchange_short)
             # Calcola available_balance (somma dei bilanci attuali)
-            long_balance = balances[exchange_long]
-            short_balance = balances[exchange_short]
+            long_balance = balances.get(exchange_long, 0)
+            short_balance = balances.get(exchange_short, 0)
+            
+            # Controllo di sicurezza per valori None
+            if long_balance is None:
+                logger.warning(f"Bilancio {exchange_long} è None, impostato a 0")
+                long_balance = 0
+            if short_balance is None:
+                logger.warning(f"Bilancio {exchange_short} è None, impostato a 0")
+                short_balance = 0
+                
             available_balance = long_balance + short_balance
             
-            # Calcola soglia stop loss
-            stop_loss_buffer = capital * (stop_loss_percentage / 100)
-            stop_loss_threshold = capital - stop_loss_buffer
+            # Debug: stampa tutti i valori prima dei calcoli
+            logger.info(f"DEBUG - long_balance: {long_balance} (type: {type(long_balance)})")
+            logger.info(f"DEBUG - short_balance: {short_balance} (type: {type(short_balance)})")
+            logger.info(f"DEBUG - available_balance: {available_balance} (type: {type(available_balance)})")
+            logger.info(f"DEBUG - capital: {capital} (type: {type(capital)})")
             
-            logger.info(f"Capitale configurato: {capital} USDT")
-            logger.info(f"Available balance: {available_balance} USDT")
-            logger.info(f"Stop loss threshold: {stop_loss_threshold} USDT (capitale - {stop_loss_percentage}%)")
+            # Controlla se è un aumento di capitale
+            is_increase = bot.get('increase', False) if bot else False
+            logger.info(f"Is capital increase: {is_increase}")
             
-            # LIVELLO 1: Controllo stop loss
-            if available_balance < stop_loss_threshold:
-                logger.warning(f"Stop loss attivato: available_balance ({available_balance}) < stop_loss_threshold ({stop_loss_threshold})")
-                return {
-                    "amount": 0, 
-                    "from_exchange": None, 
-                    "to_exchange": None, 
-                    "stop_loss_triggered": True,
-                    "error": "Stop loss attivato"
-                }
+            # LIVELLO 1: Controllo stop loss (solo se non è un aumento di capitale)
+            if not is_increase:
+                # Calcola soglia stop loss
+                logger.info(f"DEBUG - capital immediatamente prima del calcolo stop_loss: {capital} (type: {type(capital)})")
+                logger.info(f"DEBUG - stop_loss_percentage: {stop_loss_percentage} (type: {type(stop_loss_percentage)})")
+                stop_loss_buffer = capital * (stop_loss_percentage / 100)
+                stop_loss_threshold = capital - stop_loss_buffer
+                
+                logger.info(f"Capitale configurato: {capital} USDT")
+                logger.info(f"Available balance: {available_balance} USDT")
+                logger.info(f"Stop loss threshold: {stop_loss_threshold} USDT (capitale - {stop_loss_percentage}%)")
+                
+                if available_balance < stop_loss_threshold:
+                    logger.warning(f"Stop loss attivato: available_balance ({available_balance}) < stop_loss_threshold ({stop_loss_threshold})")
+                    return {
+                        "amount": 0, 
+                        "from_exchange": None, 
+                        "to_exchange": None, 
+                        "stop_loss_triggered": True,
+                        "error": "Stop loss attivato"
+                    }
+            else:
+                logger.info(f"Saltando controllo stop loss per aumento capitale")
+                logger.info(f"Capitale configurato: {capital} USDT")
+                logger.info(f"Available balance: {available_balance} USDT")
             
             # LIVELLO 2: Determina base per calcoli
+            logger.info(f"DEBUG - capital prima dell'assegnazione: {capital} (type: {type(capital)})")
+            logger.info(f"DEBUG - available_balance prima dell'assegnazione: {available_balance} (type: {type(available_balance)})")
             if available_balance > capital:
                 # Usa capital come base (caso di profitto)
+                logger.info(f"DEBUG - Assegnando capital a base_amount: {capital}")
                 base_amount = capital
+                logger.info(f"DEBUG - base_amount dopo assegnazione: {base_amount} (type: {type(base_amount)})")
                 logger.info(f"Usando capital come base: {base_amount} USDT (available_balance > capital)")
             else:
                 # Usa available_balance come base
+                logger.info(f"DEBUG - Assegnando available_balance a base_amount: {available_balance}")
                 base_amount = available_balance
+                logger.info(f"DEBUG - base_amount dopo assegnazione: {base_amount} (type: {type(base_amount)})")
                 logger.info(f"Usando available_balance come base: {base_amount} USDT")
             
             # LIVELLO 3: Calcola target con commissioni di trasferimento
             # Aggiungi 2 USDT al denominatore per le commissioni
+            logger.info(f"DEBUG - base_amount prima della divisione: {base_amount} (type: {type(base_amount)})")
             target_per_exchange = (base_amount + 2) / 2
             
             long_deficit = target_per_exchange - long_balance
