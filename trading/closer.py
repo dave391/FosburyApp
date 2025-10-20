@@ -91,7 +91,7 @@ class Closer:
                 # Mantieni la distinzione anche quando non ci sono posizioni
                 stopped_type = bot.get("stopped_type", "manual")
                 if stopped_type == "safety":
-                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "no_positions")
+                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "no_positions", transfer_reason="emergency_close")
                 else:
                     bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "no_positions")
                 return
@@ -105,7 +105,7 @@ class Closer:
                 # Mantieni la distinzione anche per API keys mancanti
                 stopped_type = bot.get("stopped_type", "manual")
                 if stopped_type == "safety":
-                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "api_keys_missing")
+                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "api_keys_missing", transfer_reason="emergency_close")
                 else:
                     bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "api_keys_missing")
                 return
@@ -166,7 +166,7 @@ class Closer:
                 if stopped_type == "safety":
                     # Safety trigger: imposta stato per transfer requested
                     logger.info(f"Safety trigger attivato - impostazione stato TRANSFER_REQUESTED")
-                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "emergency_close")
+                    bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "emergency_close", transfer_reason="emergency_close")
                 else:
                     # Stop manuale o altri motivi: imposta stato STOPPED
                     logger.info(f"Stop {stopped_type} - impostazione stato STOPPED")
@@ -177,7 +177,7 @@ class Closer:
             # Mantieni la distinzione anche in caso di errore
             stopped_type = bot.get("stopped_type", "manual")
             if stopped_type == "safety":
-                bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "emergency_close")
+                bot_manager.update_bot_status(user_id, BOT_STATUS["TRANSFER_REQUESTED"], "emergency_close", transfer_reason="emergency_close")
             else:
                 bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "error")
     

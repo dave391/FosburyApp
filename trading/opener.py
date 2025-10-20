@@ -386,21 +386,38 @@ class TradingOpener:
             currencies = ['USTF0', 'USDT', 'UST']
             distribution = {}
             
+            # Inizializza tutti i wallet e valute a 0
             for wallet in wallets:
                 distribution[wallet] = {}
-                try:
-                    balance = exchange.fetch_balance({'type': wallet})
-                    
-                    for currency in currencies:
-                        if currency in balance and balance[currency]['free'] > 0:
-                            distribution[wallet][currency] = balance[currency]['free']
-                        else:
-                            distribution[wallet][currency] = 0
+                for currency in currencies:
+                    distribution[wallet][currency] = 0
+            
+            # Usa il metodo che funziona: fetch_balance senza parametri e leggi dall'array info
+            try:
+                logger.debug("Recupero bilanci Bitfinex usando array info...")
+                balance = exchange.fetch_balance()
+                logger.debug(f"Balance completo: {balance}")
+                
+                # Estrae i balance dall'array 'info' (metodo che funziona)
+                if 'info' in balance and isinstance(balance['info'], list):
+                    for balance_entry in balance['info']:
+                        if len(balance_entry) >= 5:
+                            entry_wallet = balance_entry[0]
+                            entry_currency = balance_entry[1]
+                            entry_total = float(balance_entry[4]) if balance_entry[4] else 0
                             
-                except Exception as e:
-                    logger.warning(f"Errore recupero saldo {wallet}: {e}")
-                    for currency in currencies:
-                        distribution[wallet][currency] = 0
+                            logger.debug(f"Entry: wallet={entry_wallet}, currency={entry_currency}, total={entry_total}")
+                            
+                            # Filtra solo i wallet e valute che ci interessano
+                            if entry_wallet in wallets and entry_currency in currencies and entry_total > 0:
+                                distribution[entry_wallet][entry_currency] = entry_total
+                                logger.debug(f"Aggiunto: {entry_wallet}.{entry_currency} = {entry_total}")
+                else:
+                    logger.warning("Array 'info' non trovato nel balance Bitfinex")
+                            
+            except Exception as e:
+                logger.error(f"Errore recupero bilanci Bitfinex: {e}")
+                # Mantieni tutti i valori a 0 già inizializzati
             
             # Calcola totali per wallet e valute
             wallet_totals = {}
@@ -483,11 +500,11 @@ class TradingOpener:
             if not distribution:
                 raise Exception("Impossibile ottenere distribuzione wallet Bitfinex")
             
-            # Saldo derivatives attuale (USTF0 nel wallet margin)
-            derivatives_balance = distribution['margin']['USTF0']
+            # Saldo derivatives attuale (USTF0 + UST nel wallet margin - UST può essere convertito automaticamente)
+            derivatives_balance = distribution['margin']['USTF0'] + distribution['margin']['UST']
             total_balance = distribution['totals']['grand_total']
             
-            logger.info(f"Bitfinex - Saldo derivatives (USTF0): {derivatives_balance}, Saldo totale: {total_balance}")
+            logger.info(f"Bitfinex - Saldo derivatives (USTF0+UST): {derivatives_balance} (USTF0: {distribution['margin']['USTF0']}, UST: {distribution['margin']['UST']}), Saldo totale: {total_balance}")
             logger.info(f"Distribuzione wallet: exchange={distribution['totals']['by_wallet']['exchange']:.2f}, "
                        f"margin={distribution['totals']['by_wallet']['margin']:.2f}, "
                        f"funding={distribution['totals']['by_wallet']['funding']:.2f}")
@@ -660,9 +677,23 @@ class TradingOpener:
                         currencies = ['USDT', 'UST']  # Escluso USTF0 che è per derivatives
                         tradable_balance = 0
                         
+                        # Prima prova con i campi standard CCXT
                         for currency in currencies:
                             if currency in balance and balance[currency]['free'] > 0:
                                 tradable_balance += balance[currency]['free']
+                        
+                        # Se non trova nulla, legge dall'array 'info' (correzione per il bug)
+                        if tradable_balance == 0 and 'info' in balance and isinstance(balance['info'], list):
+                            for balance_entry in balance['info']:
+                                if len(balance_entry) >= 5:
+                                    entry_wallet = balance_entry[0]
+                                    entry_currency = balance_entry[1]
+                                    entry_total = float(balance_entry[4]) if balance_entry[4] else 0
+                                    
+                                    # Cerca USDT e UST nel wallet margin
+                                    if entry_wallet == 'margin' and entry_currency in currencies and entry_total > 0:
+                                        tradable_balance += entry_total
+                                        logger.debug(f"Bitfinex tradable balance da info: {entry_currency} = {entry_total}")
                         
                         logger.debug(f"Bitfinex tradable balance: {tradable_balance} USDT")
                         return tradable_balance
@@ -679,13 +710,29 @@ class TradingOpener:
                     for wallet in wallets:
                         try:
                             balance = exchange.fetch_balance({'type': wallet})
+                            wallet_balance = 0
                             
-                            # Somma tutti i fondi disponibili (free) di tutte le valute supportate
+                            # Prima prova con i campi standard CCXT
                             for currency in currencies:
                                 if currency in balance and balance[currency]['free'] > 0:
                                     amount = balance[currency]['free']
-                                    total_balance += amount
+                                    wallet_balance += amount
                                     logger.debug(f"Bitfinex {wallet} wallet - {currency}: {amount}")
+                            
+                            # Se non trova nulla, legge dall'array 'info' (correzione per il bug)
+                            if wallet_balance == 0 and 'info' in balance and isinstance(balance['info'], list):
+                                for balance_entry in balance['info']:
+                                    if len(balance_entry) >= 5:
+                                        entry_wallet = balance_entry[0]
+                                        entry_currency = balance_entry[1]
+                                        entry_total = float(balance_entry[4]) if balance_entry[4] else 0
+                                        
+                                        # Cerca tutte le valute nel wallet corrente
+                                        if entry_wallet == wallet and entry_currency in currencies and entry_total > 0:
+                                            wallet_balance += entry_total
+                                            logger.debug(f"Bitfinex {wallet} wallet da info - {entry_currency}: {entry_total}")
+                            
+                            total_balance += wallet_balance
                                     
                         except Exception as e:
                             logger.warning(f"Errore recupero saldo {wallet}: {e}")
@@ -797,11 +844,62 @@ class TradingOpener:
             logger.error(f"Errore gestione posizioni: {e}")
             return False
     
+    def _convert_ust_to_ustf0_in_margin(self) -> bool:
+        """Converte UST in USTF0 nel margin wallet di Bitfinex se necessario"""
+        try:
+            # Ottieni la distribuzione dei wallet
+            distribution = self._get_bitfinex_wallet_distribution()
+            ust_in_margin = distribution.get('margin', {}).get('UST', 0)
+            
+            if ust_in_margin > 0:
+                logger.info(f"Conversione UST->USTF0 nel margin wallet: {ust_in_margin} UST")
+                
+                # Usa l'API privata per la conversione interna (stesso metodo del test)
+                exchange = exchange_manager.exchanges['bitfinex']
+                
+                params = {
+                    "from": "margin",
+                    "to": "margin", 
+                    "currency": "UST",
+                    "currency_to": "USTF0",
+                    "amount": str(ust_in_margin)
+                }
+                
+                if hasattr(exchange, 'privatePostAuthWTransfer'):
+                    result = exchange.privatePostAuthWTransfer(params)
+                    
+                    if result and isinstance(result, list) and len(result) > 0:
+                        status = result[6] if len(result) > 6 else "UNKNOWN"
+                        
+                        if status == "SUCCESS":
+                            logger.info(f"✅ Conversione UST->USTF0 completata: {ust_in_margin} UST convertiti in USTF0")
+                            return True
+                        else:
+                            error_msg = result[7] if len(result) > 7 else "Errore sconosciuto"
+                            logger.error(f"❌ Conversione UST->USTF0 fallita: {status} - {error_msg}")
+                            return False
+                else:
+                    logger.error("❌ Metodo privatePostAuthWTransfer non disponibile")
+                    return False
+            else:
+                logger.info("Nessun UST da convertire nel margin wallet")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Errore durante conversione UST->USTF0: {e}")
+            return False
+
     def create_new_positions(self, exchange_long: str, exchange_short: str, 
                            size_long: float, size_short: float, leverage: float, 
                            user_id: str, bot_id: str, bot_config: Dict) -> bool:
         """Crea nuove posizioni sui due exchange"""
         try:
+            # Se uno degli exchange è Bitfinex, converti UST in USTF0 nel margin wallet
+            if exchange_long == 'bitfinex' or exchange_short == 'bitfinex':
+                logger.info("Conversione UST->USTF0 nel margin wallet prima di aprire posizioni...")
+                if not self._convert_ust_to_ustf0_in_margin():
+                    logger.warning("Conversione UST->USTF0 fallita, ma continuo con l'apertura posizioni")
+            
             # Apri posizione LONG
             order_long = exchange_manager.create_market_order(
                 exchange_long, 'buy', size_long, leverage
@@ -846,6 +944,12 @@ class TradingOpener:
                                    user_id: str, bot_id: str, bot_config: Dict) -> bool:
         """Incrementa posizioni esistenti durante aumento capitale"""
         try:
+            # Se uno degli exchange è Bitfinex, converti UST in USTF0 nel margin wallet
+            if exchange_long == 'bitfinex' or exchange_short == 'bitfinex':
+                logger.info("Conversione UST->USTF0 nel margin wallet prima di incrementare posizioni...")
+                if not self._convert_ust_to_ustf0_in_margin():
+                    logger.warning("Conversione UST->USTF0 fallita, ma continuo con l'incremento posizioni")
+            
             # Recupera posizioni esistenti aperte per questo bot
             existing_positions = position_manager.get_bot_open_positions(bot_id)
             
