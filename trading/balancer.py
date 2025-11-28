@@ -127,6 +127,9 @@ class Balancer:
             elif status == BOT_STATUS["TRANSFERING"] and transfer_reason == "rebalance":
                 logger.debug(f"Bot {bot_id}: processabile (stato: TRANSFERING, motivo: rebalance)")
                 processable_bots.append(bot)
+            elif status == BOT_STATUS["EXTERNAL_TRANSFER_PENDING"] and transfer_reason == "rebalance":
+                logger.debug(f"Bot {bot_id}: processabile (stato: EXTERNAL_TRANSFER_PENDING, motivo: rebalance)")
+                processable_bots.append(bot)
             else:
                 logger.debug(f"Bot {bot_id}: saltato (stato sconosciuto: {status})")
                 skipped_count["other"] += 1
@@ -148,6 +151,8 @@ class Balancer:
             user_id = bot["user_id"]
             bot_id = bot["_id"]
             target_leverage = bot.get("leverage")
+            current_status = bot.get("status")
+            transfer_reason = bot.get("transfer_reason")
             
             # Verifica che la leva target sia configurata
             if target_leverage is None:
@@ -204,6 +209,31 @@ class Balancer:
                     logger.info(f"Exchange {exchange_name} inizializzato con successo")
                 else:
                     logger.error(f"Impossibile inizializzare {exchange_name}")
+
+            # Safety check dedicato per stato EXTERNAL_TRANSFER_PENDING con motivo rebalance
+            if current_status == BOT_STATUS["EXTERNAL_TRANSFER_PENDING"] and transfer_reason == "rebalance":
+                try:
+                    danger = False
+                    for position in open_positions:
+                        safety_value = position.get("safety_value")
+                        side = position.get("side")
+                        ex = position.get("exchange")
+                        if safety_value is None or side is None or ex not in initialized_exchanges:
+                            continue
+                        current_price = exchange_manager.get_solana_price(ex)
+                        if current_price is None:
+                            continue
+                        if (side == "long" and current_price < safety_value) or (side == "short" and current_price > safety_value):
+                            danger = True
+                            break
+                    if danger:
+                        bot_manager.update_bot_status(user_id, BOT_STATUS["STOP_REQUESTED"], stopped_type="safety", transfer_reason="emergency_close")
+                        logger.info(f"Bot {bot_id}: safety trigger in EXTERNAL_TRANSFER_PENDING → STOP_REQUESTED")
+                    else:
+                        logger.info(f"Bot {bot_id}: safety OK in EXTERNAL_TRANSFER_PENDING (rebalance)")
+                except Exception as e:
+                    logger.error(f"Errore safety check per bot {bot_id}: {e}")
+                return
             
             # Analizza e ribilancia le posizioni
             all_positions_success = True
