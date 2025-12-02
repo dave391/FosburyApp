@@ -193,6 +193,8 @@ class PriceMonitor:
             safety_bots.extend(bot_manager.get_running_bots())
             safety_bots.extend(bot_manager.get_transfer_requested_bots())
             safety_bots.extend(bot_manager.get_stop_requested_bots())
+            # Includi anche i bot in attesa di trasferimento esterno
+            safety_bots.extend(bot_manager.get_external_transfer_pending_bots())
             
             # Aggiungi bot in stato 'transfering' se esiste il metodo
             try:
