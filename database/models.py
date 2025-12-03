@@ -609,6 +609,8 @@ class PositionManager:
                     "close_price": close_data.get("close_price"),
                     "realized_pnl": close_data.get("realized_pnl")
                 })
+                if close_data.get("close_reason") is not None:
+                    update_data["close_reason"] = close_data.get("close_reason")
             
             result = self.positions.update_one(
                 {"position_id": position_id},

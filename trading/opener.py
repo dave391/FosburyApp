@@ -907,7 +907,24 @@ class TradingOpener:
             
             if not order_long:
                 logger.error(f"Errore apertura posizione long su {exchange_long}")
-                return False
+                # Tentativo con leva adattiva
+                adaptive_success = False
+                step = 0.1
+                max_increase = 0.5
+                attempts = int(max_increase / step)
+                for i in range(1, attempts + 1):
+                    new_lev = round(leverage + i * step, 2)
+                    order_long = exchange_manager.create_market_order(
+                        exchange_long, 'buy', size_long, new_lev
+                    )
+                    if order_long:
+                        adaptive_success = True
+                        leverage_long_used = new_lev
+                        break
+                if not adaptive_success:
+                    return False
+                else:
+                    leverage = leverage  # manteniamo la leva utente per l'altro lato
             
             logger.info(f"Posizione long aperta su {exchange_long}: {order_long}")
             
@@ -921,10 +938,33 @@ class TradingOpener:
             
             if not order_short:
                 logger.error(f"Errore apertura posizione short su {exchange_short}")
-                # Prova a chiudere posizione long già aperta
-                logger.info("Tentativo chiusura posizione long...")
-                exchange_manager.close_position(exchange_long)
-                return False
+                # Leva adattiva lato short
+                adaptive_success = False
+                step = 0.1
+                max_increase = 0.5
+                attempts = int(max_increase / step)
+                for i in range(1, attempts + 1):
+                    new_lev = round(leverage + i * step, 2)
+                    order_short = exchange_manager.create_market_order(
+                        exchange_short, 'sell', size_short, new_lev
+                    )
+                    if order_short:
+                        adaptive_success = True
+                        break
+                if not adaptive_success:
+                    # Chiudi long e aggiorna DB e bot status
+                    close_result = exchange_manager.close_position(exchange_long)
+                    close_order = close_result.get('order') if isinstance(close_result, dict) else None
+                    close_price = None
+                    if isinstance(close_order, dict):
+                        close_price = close_order.get('average') or close_order.get('price')
+                    position_manager.update_position_status(
+                        position_id=order_long.get('id'),
+                        status="closed",
+                        close_data={"close_price": float(close_price) if close_price else None, "realized_pnl": None, "close_reason": "hedge_failed"}
+                    )
+                    bot_manager.update_bot_status(user_id, BOT_STATUS["STOPPED"], "leverage_insufficient")
+                    return False
             
             logger.info(f"Posizione short aperta su {exchange_short}: {order_short}")
             
