@@ -1,6 +1,6 @@
 streamlit==1.45.1
 pymongo==4.6.0
-ccxt==4.4.80
+ccxt==4.5.28
 bcrypt==4.1.2
 cryptography==42.0.8
 python-dotenv==1.0.0
